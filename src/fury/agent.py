@@ -6,6 +6,7 @@ import base64
 import mimetypes
 import requests
 import asyncio
+import re
 from termcolor import cprint
 from .utils.audio import load_audio
 from dataclasses import dataclass
@@ -52,6 +53,23 @@ class ChatStreamEvent:
     content: Optional[str] = None
     reasoning: Optional[str] = None
     tool_call: Optional[ToolCallEvent] = None
+
+
+def _prune_unfinished_sentences(text: str) -> str:
+    """
+    Prune any unfinished sentences from an input string.
+    Keeps only text up to and including the last valid sentence ending punctuation.
+    """
+    if not text:
+        return ""
+
+    pattern = r"^(.*[.!?]+)\s*$"
+    match = re.search(pattern, text, flags=re.DOTALL)
+
+    if match:
+        return match.group(1)
+
+    return ""
 
 
 def create_tool(
@@ -235,12 +253,15 @@ class Agent:
         self,
         history: List[Dict[str, Any]],
         reasoning: bool = False,
+        prune_unfinished_sentences: bool = False,
     ) -> AsyncGenerator[ChatStreamEvent, None]:
         """
         Chat with the agent. Streams the response from the agent.
 
         Args:
             history: List of messages in the conversation.
+            prune_unfinished_sentences: Whether to suppress trailing incomplete sentences
+                while streaming.
 
         Returns:
             AsyncGenerator of ChatStreamEvent entries with content, reasoning, or tool data.
@@ -313,6 +334,9 @@ class Agent:
 
                 completion = await self.client.chat.completions.create(**kwargs)
 
+                content_buffer = ""
+                emitted_length = 0
+
                 async for chunk in completion:  # type: ignore
                     delta = chunk.choices[0].delta
                     if delta.tool_calls:
@@ -341,7 +365,15 @@ class Agent:
                         continue
 
                     if delta.content:
-                        yield ChatStreamEvent(content=delta.content)
+                        if prune_unfinished_sentences:
+                            content_buffer += delta.content
+                            pruned = _prune_unfinished_sentences(content_buffer)
+                            if len(pruned) > emitted_length:
+                                fresh = pruned[emitted_length:]
+                                emitted_length = len(pruned)
+                                yield ChatStreamEvent(content=fresh)
+                        else:
+                            yield ChatStreamEvent(content=delta.content)
 
                 if not tool_calls:
                     return
@@ -419,6 +451,7 @@ class Agent:
         user_input: str,
         history: Optional[List[Dict[str, Any]]] = None,
         reasoning: bool = False,
+        prune_unfinished_sentences: bool = False,
     ) -> str:
         """
         Send a single user message and return the assistant response.
@@ -427,6 +460,8 @@ class Agent:
             user_input: The user message to send.
             history: Optional conversation history to append to.
             reasoning: Whether to include reasoning content in the stream.
+            prune_unfinished_sentences: Whether to suppress trailing incomplete sentences
+                while streaming.
 
         Returns:
             The assistant response content as a string.
@@ -439,7 +474,11 @@ class Agent:
         if not self._validate_history(active_history):
             raise ValueError("History is not in the correct format")
 
-        async for event in self.chat(active_history, reasoning=reasoning):
+        async for event in self.chat(
+            active_history,
+            reasoning=reasoning,
+            prune_unfinished_sentences=prune_unfinished_sentences,
+        ):
             if event.content:
                 buffer.append(event.content)
 
@@ -452,6 +491,7 @@ class Agent:
         user_input: str,
         history: Optional[List[Dict[str, Any]]] = None,
         reasoning: bool = False,
+        prune_unfinished_sentences: bool = False,
     ) -> str:
         """
         Synchronous wrapper for ask_async.
@@ -475,6 +515,7 @@ class Agent:
                 user_input=user_input,
                 history=history,
                 reasoning=reasoning,
+                prune_unfinished_sentences=prune_unfinished_sentences,
             )
         )
 
