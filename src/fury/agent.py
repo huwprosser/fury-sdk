@@ -338,7 +338,11 @@ class Agent:
                 emitted_length = 0
 
                 async for chunk in completion:  # type: ignore
+                    if not getattr(chunk, "choices", None):
+                        continue
                     delta = chunk.choices[0].delta
+                    if not delta:
+                        continue
                     if delta.tool_calls:
                         for tc_chunk in delta.tool_calls:
                             if len(tool_calls) <= tc_chunk.index:
