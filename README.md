@@ -8,6 +8,9 @@
   <a href="https://discord.gg/xC9Yd6VH2a">
     <img src="https://img.shields.io/discord/841085263266447400?logo=discord" alt="Discord">
   </a>
+  <a href="https://github.com/huwprosser/fury/actions/workflows/tests.yml">
+    <img src="https://github.com/huwprosser/fury/actions/workflows/tests.yml/badge.svg?branch=main" alt="Tests">
+  </a>
 </p>
 
 A flexible and powerful AI agent library for Python, designed to build agents with tool support, multimodal capabilities, and streaming responses.
