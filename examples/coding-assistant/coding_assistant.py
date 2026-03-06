@@ -265,44 +265,28 @@ def discover_skill_files(root_dir: str) -> List[str]:
     if not os.path.exists(root_dir):
         return files
 
-    try:
-        entries = list(os.scandir(root_dir))
-    except OSError:
-        return files
-
-    for entry in entries:
-        if entry.name.startswith(".") or entry.name == "node_modules":
-            continue
-        path = entry.path
+    def _walk(path: str, root_level: bool) -> None:
         try:
-            if entry.is_dir(follow_symlinks=False):
-                files.extend(discover_skill_files_in_subdir(path))
-            elif entry.is_file(follow_symlinks=False) and entry.name.endswith(".md"):
-                files.append(path)
+            entries = list(os.scandir(path))
         except OSError:
-            continue
+            return
 
-    return files
+        for entry in entries:
+            if entry.name.startswith(".") or entry.name == "node_modules":
+                continue
+            entry_path = entry.path
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    _walk(entry_path, root_level=False)
+                elif entry.is_file(follow_symlinks=False):
+                    if root_level and entry.name.endswith(".md"):
+                        files.append(entry_path)
+                    elif not root_level and entry.name == "SKILL.md":
+                        files.append(entry_path)
+            except OSError:
+                continue
 
-
-def discover_skill_files_in_subdir(root_dir: str) -> List[str]:
-    files: List[str] = []
-    try:
-        entries = list(os.scandir(root_dir))
-    except OSError:
-        return files
-
-    for entry in entries:
-        if entry.name.startswith(".") or entry.name == "node_modules":
-            continue
-        path = entry.path
-        try:
-            if entry.is_dir(follow_symlinks=False):
-                files.extend(discover_skill_files_in_subdir(path))
-            elif entry.is_file(follow_symlinks=False) and entry.name == "SKILL.md":
-                files.append(path)
-        except OSError:
-            continue
+    _walk(root_dir, root_level=True)
 
     return files
 

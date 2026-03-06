@@ -801,7 +801,6 @@ dependencies = [
     { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "openai" },
     { name = "openai-whisper" },
-    { name = "requests" },
     { name = "soundfile" },
     { name = "termcolor" },
 ]
@@ -843,7 +842,6 @@ requires-dist = [
     { name = "pydantic", marker = "extra == 'examples'" },
     { name = "pytest", marker = "extra == 'test'" },
     { name = "python-dotenv", marker = "extra == 'examples'" },
-    { name = "requests" },
     { name = "sounddevice", marker = "extra == 'tts'", specifier = ">=0.5.5" },
     { name = "soundfile" },
     { name = "termcolor" },

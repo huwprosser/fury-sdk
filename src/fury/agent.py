@@ -4,11 +4,11 @@ import logging
 import inspect
 import base64
 import mimetypes
-import requests
 import asyncio
 import re
 from termcolor import cprint
 from .utils.audio import load_audio
+from .validation import validate_history
 from dataclasses import dataclass
 from typing import (
     AsyncGenerator,
@@ -266,184 +266,30 @@ class Agent:
         Returns:
             AsyncGenerator of ChatStreamEvent entries with content, reasoning, or tool data.
         """
-
-        if not self._validate_history(history):
-            raise ValueError("History is not in the correct format")
-
-        def format_multimodal_content(res):
-            if isinstance(res, dict) and "image_base64" in res:
-                description = res.get("description", "Image captured from webcam.")
-                user_message = {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": description,
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{res['image_base64']}"
-                            },
-                        },
-                    ],
-                }
-                return description, user_message
-            return str(res), None
+        self._validate_history(history)
 
         try:
-
-            if history is not None:
-                # Ensure the system prompt is included when caller provides history.
-                active_history = list(history)
-                if self.system_prompt and not any(
-                    msg.get("role") == "system" for msg in active_history
-                ):
-                    active_history = [
-                        {"role": "system", "content": self.system_prompt},
-                        *active_history,
-                    ]
-
-            def tool_error_payload(call_id: str, name: str, msg: str):
-                return (
-                    {
-                        "tool_call_id": call_id,
-                        "role": "tool",
-                        "name": name,
-                        "content": msg,
-                    },
-                    msg,
-                )
-
+            active_history = self._prepare_active_history(history)
             for _ in range(self.max_tool_rounds):
                 tool_calls: List[Dict[str, Any]] = []
-                kwargs: Dict[str, Any] = {
-                    "model": self.model,
-                    "messages": active_history,
-                    "stream": True,
-                }
-                if not reasoning:
-                    kwargs["extra_body"] = {
-                        "chat_template_kwargs": {"enable_thinking": False}
-                    }
-                if self.tools:
-                    kwargs["tools"] = self.tools
-
-                if self.generation_params:
-                    kwargs.update(self.generation_params)
-
+                kwargs = self._build_chat_completion_kwargs(active_history, reasoning)
                 completion = await self.client.chat.completions.create(**kwargs)
-
-                content_buffer = ""
-                emitted_length = 0
-
-                async for chunk in completion:  # type: ignore
-                    if not getattr(chunk, "choices", None):
-                        continue
-                    delta = chunk.choices[0].delta
-                    if not delta:
-                        continue
-                    if delta.tool_calls:
-                        for tc_chunk in delta.tool_calls:
-                            if len(tool_calls) <= tc_chunk.index:
-                                tool_calls.append(
-                                    {
-                                        "id": "",
-                                        "type": "function",
-                                        "function": {"name": "", "arguments": ""},
-                                    }
-                                )
-                            tc = tool_calls[tc_chunk.index]
-                            if tc_chunk.id:
-                                tc["id"] += tc_chunk.id
-                            if tc_chunk.function.name:
-                                tc["function"]["name"] += tc_chunk.function.name
-                            if tc_chunk.function.arguments:
-                                tc["function"][
-                                    "arguments"
-                                ] += tc_chunk.function.arguments
-
-                    reasoning_content = getattr(delta, "reasoning_content", None)
-                    if reasoning_content:
-                        yield ChatStreamEvent(reasoning=reasoning_content)
-                        continue
-
-                    if delta.content:
-                        if prune_unfinished_sentences:
-                            content_buffer += delta.content
-                            pruned = _prune_unfinished_sentences(content_buffer)
-                            if len(pruned) > emitted_length:
-                                fresh = pruned[emitted_length:]
-                                emitted_length = len(pruned)
-                                yield ChatStreamEvent(content=fresh)
-                        else:
-                            yield ChatStreamEvent(content=delta.content)
+                async for event in self._stream_chat_completion_events(
+                    completion=completion,
+                    tool_calls=tool_calls,
+                    prune_unfinished_sentences=prune_unfinished_sentences,
+                ):
+                    yield event
 
                 if not tool_calls:
                     return
 
                 active_history.append({"role": "assistant", "tool_calls": tool_calls})
-
-                for tool_call in tool_calls:
-                    fname = tool_call["function"]["name"]
-                    call_id = tool_call["id"]
-
-                    if fname not in self.available_functions:
-                        continue
-
-                    try:
-                        args = json.loads(tool_call["function"]["arguments"])
-                    except json.JSONDecodeError as e:
-                        payload, error_msg = tool_error_payload(
-                            call_id, fname, f"Error decoding arguments for {fname}: {e}"
-                        )
-                        yield ChatStreamEvent(content=error_msg)
-                        active_history.append(payload)
-                        continue
-
-                    try:
-                        args = self._filter_args(fname, args)
-                        announcement = self._build_tool_announcement_phrase(fname, args)
-                        yield ChatStreamEvent(
-                            tool_call=ToolCallEvent(
-                                tool_name=fname,
-                                arguments=args,
-                                announcement_phrase=announcement,
-                            )
-                        )
-
-                        func = self.available_functions[fname]
-                        result = (
-                            await func(**args)
-                            if inspect.iscoroutinefunction(func)
-                            else func(**args)
-                        )
-                    except Exception as e:
-                        logger.exception(f"Error executing tool {fname}")
-                        result = f"Error: {str(e)}"
-
-                    if isinstance(result, ToolResult):
-                        if result.output_schema:
-                            yield ChatStreamEvent(
-                                reasoning=f"data_{json.dumps(result.output_schema)}"
-                            )
-                        result = result.content
-
-                    yield ChatStreamEvent(
-                        tool_call=ToolCallEvent(tool_name=fname, result=result)
-                    )
-
-                    tool_content, vision_message = format_multimodal_content(result)
-                    active_history.append(
-                        {
-                            "tool_call_id": call_id,
-                            "role": "tool",
-                            "name": fname,
-                            "content": tool_content,
-                        }
-                    )
-                    if vision_message:
-                        active_history.append(vision_message)
+                async for event in self._execute_tool_calls(
+                    tool_calls=tool_calls,
+                    active_history=active_history,
+                ):
+                    yield event
 
             yield ChatStreamEvent(content="Max tool rounds reached")
         except Exception as e:
@@ -475,8 +321,7 @@ class Agent:
 
         buffer: List[str] = []
 
-        if not self._validate_history(active_history):
-            raise ValueError("History is not in the correct format")
+        self._validate_history(active_history)
 
         async for event in self.chat(
             active_history,
@@ -661,12 +506,198 @@ class Agent:
             return []
         return await asyncio.gather(*tasks)
 
+    def _prepare_active_history(self, history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Copy history and ensure the system message exists when configured."""
+        active_history = list(history)
+        if self.system_prompt and not any(
+            msg.get("role") == "system" for msg in active_history
+        ):
+            return [{"role": "system", "content": self.system_prompt}, *active_history]
+        return active_history
+
+    def _build_chat_completion_kwargs(
+        self, active_history: List[Dict[str, Any]], reasoning: bool
+    ) -> Dict[str, Any]:
+        kwargs: Dict[str, Any] = {
+            "model": self.model,
+            "messages": active_history,
+            "stream": True,
+        }
+        if not reasoning:
+            kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+        if self.tools:
+            kwargs["tools"] = self.tools
+        if self.generation_params:
+            kwargs.update(self.generation_params)
+        return kwargs
+
+    async def _stream_chat_completion_events(
+        self,
+        completion: Any,
+        tool_calls: List[Dict[str, Any]],
+        prune_unfinished_sentences: bool,
+    ) -> AsyncGenerator[ChatStreamEvent, None]:
+        content_buffer = ""
+        emitted_length = 0
+
+        async for chunk in completion:  # type: ignore
+            if not getattr(chunk, "choices", None):
+                continue
+            delta = chunk.choices[0].delta
+            if not delta:
+                continue
+
+            self._append_tool_call_chunks(tool_calls, getattr(delta, "tool_calls", None))
+
+            reasoning_content = getattr(delta, "reasoning_content", None)
+            if reasoning_content:
+                yield ChatStreamEvent(reasoning=reasoning_content)
+                continue
+
+            if not delta.content:
+                continue
+
+            if prune_unfinished_sentences:
+                content_buffer += delta.content
+                pruned = _prune_unfinished_sentences(content_buffer)
+                if len(pruned) <= emitted_length:
+                    continue
+                fresh = pruned[emitted_length:]
+                emitted_length = len(pruned)
+                yield ChatStreamEvent(content=fresh)
+                continue
+
+            yield ChatStreamEvent(content=delta.content)
+
+    def _append_tool_call_chunks(
+        self,
+        tool_calls: List[Dict[str, Any]],
+        delta_tool_calls: Optional[List[Any]],
+    ) -> None:
+        if not delta_tool_calls:
+            return
+        for tc_chunk in delta_tool_calls:
+            if len(tool_calls) <= tc_chunk.index:
+                tool_calls.append(
+                    {
+                        "id": "",
+                        "type": "function",
+                        "function": {"name": "", "arguments": ""},
+                    }
+                )
+            tc = tool_calls[tc_chunk.index]
+            if tc_chunk.id:
+                tc["id"] += tc_chunk.id
+            if tc_chunk.function.name:
+                tc["function"]["name"] += tc_chunk.function.name
+            if tc_chunk.function.arguments:
+                tc["function"]["arguments"] += tc_chunk.function.arguments
+
+    async def _execute_tool_calls(
+        self,
+        tool_calls: List[Dict[str, Any]],
+        active_history: List[Dict[str, Any]],
+    ) -> AsyncGenerator[ChatStreamEvent, None]:
+        for tool_call in tool_calls:
+            fname = tool_call["function"]["name"]
+            call_id = tool_call["id"]
+
+            if fname not in self.available_functions:
+                continue
+
+            try:
+                args = json.loads(tool_call["function"]["arguments"])
+            except json.JSONDecodeError as exc:
+                payload, error_msg = self._tool_error_payload(
+                    call_id,
+                    fname,
+                    f"Error decoding arguments for {fname}: {exc}",
+                )
+                yield ChatStreamEvent(content=error_msg)
+                active_history.append(payload)
+                continue
+
+            filtered_args = self._filter_args(fname, args)
+            announcement = self._build_tool_announcement_phrase(fname, filtered_args)
+            yield ChatStreamEvent(
+                tool_call=ToolCallEvent(
+                    tool_name=fname,
+                    arguments=filtered_args,
+                    announcement_phrase=announcement,
+                )
+            )
+
+            result = await self._execute_tool(fname, filtered_args)
+            normalized_result, output_schema = self._normalize_tool_result(result)
+            if output_schema:
+                yield ChatStreamEvent(reasoning=f"data_{json.dumps(output_schema)}")
+
+            yield ChatStreamEvent(
+                tool_call=ToolCallEvent(tool_name=fname, result=normalized_result)
+            )
+
+            tool_content, vision_message = self._format_multimodal_content(normalized_result)
+            active_history.append(
+                {
+                    "tool_call_id": call_id,
+                    "role": "tool",
+                    "name": fname,
+                    "content": tool_content,
+                }
+            )
+            if vision_message:
+                active_history.append(vision_message)
+
+    async def _execute_tool(self, tool_name: str, args: Dict[str, Any]) -> Any:
+        func = self.available_functions[tool_name]
+        try:
+            if inspect.iscoroutinefunction(func):
+                return await func(**args)
+            return func(**args)
+        except Exception as exc:
+            logger.exception(f"Error executing tool {tool_name}")
+            return f"Error: {str(exc)}"
+
+    def _normalize_tool_result(
+        self, result: Any
+    ) -> tuple[Any, Optional[Dict[str, Any]]]:
+        if not isinstance(result, ToolResult):
+            return result, None
+        return result.content, result.output_schema
+
+    def _tool_error_payload(
+        self, call_id: str, name: str, msg: str
+    ) -> tuple[Dict[str, Any], str]:
+        return (
+            {
+                "tool_call_id": call_id,
+                "role": "tool",
+                "name": name,
+                "content": msg,
+            },
+            msg,
+        )
+
+    def _format_multimodal_content(
+        self, result: Any
+    ) -> tuple[str, Optional[Dict[str, Any]]]:
+        if not (isinstance(result, dict) and "image_base64" in result):
+            return str(result), None
+
+        description = result.get("description", "Image captured from webcam.")
+        user_message = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": description},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{result['image_base64']}"},
+                },
+            ],
+        }
+        return description, user_message
+
     def _validate_history(self, history: List[Dict[str, Any]]) -> bool:
         """Validate the history is in the correct format."""
-        for message in history:
-            if message.get("role") not in ["system", "user", "assistant", "tool"]:
-                raise ValueError(f"Invalid role: {message.get('role')}")
-            if message.get("content") is None:
-                raise ValueError("Content is required")
-
+        validate_history(history)
         return True

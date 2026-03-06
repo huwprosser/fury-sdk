@@ -2,6 +2,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from openai import AsyncOpenAI
+from .validation import validate_message
 
 DEFAULT_SUMMARY_SYSTEM_PROMPT = (
     "Summarize the conversation for future context using this format:\n"
@@ -99,10 +100,7 @@ class HistoryManager:
         return tokens, percent
 
     def _validate_message(self, message: Dict[str, Any]) -> None:
-        if message.get("role") not in {"system", "user", "assistant", "tool"}:
-            raise ValueError(f"Invalid role: {message.get('role')}")
-        if message.get("content") is None:
-            raise ValueError("Content is required")
+        validate_message(message)
 
     def _estimate_tokens_for_message(self, message: Dict[str, Any]) -> int:
         role = message.get("role")
