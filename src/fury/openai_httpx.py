@@ -303,12 +303,12 @@ class RetryConfig:
     jitter: float = 0.25
 
 
-class AsyncOpenAI:
+class AsyncOpenAICompatibleClient:
     """
-    Small httpx-backed replacement for the subset of AsyncOpenAI Fury uses.
+    Small httpx-backed client for the subset of the OpenAI-compatible API Fury uses.
 
     Supported surface:
-    - AsyncOpenAI(base_url=..., api_key=...)
+    - AsyncOpenAICompatibleClient(base_url=..., api_key=...)
     - client.chat.completions.create(...)
     - non-streaming text responses
     - streaming text/reasoning/tool-call deltas over SSE
@@ -362,7 +362,7 @@ class AsyncOpenAI:
         if self._owns_client:
             await self._client.aclose()
 
-    async def __aenter__(self) -> AsyncOpenAI:
+    async def __aenter__(self) -> AsyncOpenAICompatibleClient:
         return self
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
@@ -542,3 +542,6 @@ def _parse_retry_after(response: Optional[httpx.Response]) -> Optional[float]:
 
 async def _async_sleep(seconds: float) -> None:
     await asyncio.sleep(seconds)
+
+
+AsyncOpenAI = AsyncOpenAICompatibleClient

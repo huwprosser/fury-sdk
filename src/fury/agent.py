@@ -18,7 +18,7 @@ from typing import (
     Any,
     Union,
 )
-from .llm_client import ClientBackend, ChatClientProtocol, create_chat_client
+from .llm_client import ChatClientProtocol, create_chat_client
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +115,6 @@ class Agent:
         generation_params: Optional[Dict[str, Any]] = None,
         max_tool_rounds: int = 50,
         parallel_tool_calls: bool = True,
-        client_backend: ClientBackend = "openai",
         client_options: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
@@ -130,8 +129,7 @@ class Agent:
             generation_params: The generation parameters to use.
             max_tool_rounds: The maximum number of tool rounds allowed before giving up.
             parallel_tool_calls: Whether to allow parallel tool calls.
-            client_backend: Backend used for the chat client.
-            client_options: Extra client constructor kwargs for the selected backend.
+            client_options: Extra client constructor kwargs for the HTTP client.
         """
         self.model = model
         self.system_prompt = system_prompt
@@ -174,7 +172,6 @@ class Agent:
         self.client = create_chat_client(
             base_url=base_url,
             api_key=api_key,
-            backend=client_backend,
             **(client_options or {}),
         )
         self.show_yourself()
