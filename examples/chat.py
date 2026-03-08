@@ -2,9 +2,8 @@ import asyncio
 
 from fury import Agent, HistoryManager
 
-
 agent = Agent(
-    model="unsloth/GLM-4.6V-Flash-GGUF:Q8_0",
+    model="unsloth/Qwen3.5-4B-GGUF:Q4_K_M",
     system_prompt="You are a helpful assistant.",
 )
 

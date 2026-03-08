@@ -3,6 +3,7 @@ Text-to-Speech example.
 """
 
 import wave
+
 import numpy as np
 
 from fury import Agent
@@ -20,11 +21,11 @@ def write_wav(path: str, audio: np.ndarray, sample_rate: int = 24000) -> None:
 def main() -> None:
 
     agent = Agent(
-        model="unsloth/GLM-4.6V-Flash-GGUF:Q8_0",
+        model="unsloth/Qwen3.5-4B-GGUF:Q4_K_M",
         system_prompt="You are a helpful assistant.",
     )
     audio_chunks = agent.speak(
-        text="Welcome to Fury. The last Agent SDK you'll ever need.",
+        text="Welcome to Fury. The last Agent SDK you will ever need, sir.",
         ref_text="Welcome home sir.",
         ref_audio_path="resources/ref.wav",
     )

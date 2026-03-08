@@ -7,7 +7,6 @@ import mimetypes
 import asyncio
 import re
 from termcolor import cprint
-from .utils.audio import load_audio
 from .validation import validate_history
 from dataclasses import dataclass
 from typing import (
@@ -19,7 +18,7 @@ from typing import (
     Any,
     Union,
 )
-from openai import AsyncOpenAI
+from .llm_client import ClientBackend, ChatClientProtocol, create_chat_client
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +103,7 @@ class Agent:
     tool_objects: Dict[str, Tool]
     generation_params: Dict[str, Any]
     parallel_tool_calls: bool
-    client: AsyncOpenAI
+    client: ChatClientProtocol
 
     def __init__(
         self,
@@ -116,6 +115,8 @@ class Agent:
         generation_params: Optional[Dict[str, Any]] = None,
         max_tool_rounds: int = 50,
         parallel_tool_calls: bool = True,
+        client_backend: ClientBackend = "openai",
+        client_options: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Initialize the Agent.
@@ -129,6 +130,8 @@ class Agent:
             generation_params: The generation parameters to use.
             max_tool_rounds: The maximum number of tool rounds allowed before giving up.
             parallel_tool_calls: Whether to allow parallel tool calls.
+            client_backend: Backend used for the chat client.
+            client_options: Extra client constructor kwargs for the selected backend.
         """
         self.model = model
         self.system_prompt = system_prompt
@@ -168,7 +171,12 @@ class Agent:
         if self.system_prompt:
             self.history.append({"role": "system", "content": self.system_prompt})
 
-        self.client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+        self.client = create_chat_client(
+            base_url=base_url,
+            api_key=api_key,
+            backend=client_backend,
+            **(client_options or {}),
+        )
         self.show_yourself()
 
     def add_image_to_history(
@@ -195,16 +203,29 @@ class Agent:
     ) -> List[Dict[str, Any]]:
         """Transcribe base64 audio and append it to the history as user content."""
         if not self.stt:
-            import whisper
+            try:
+                from faster_whisper import WhisperModel
+            except ModuleNotFoundError as exc:
+                raise ModuleNotFoundError(
+                    "STT dependencies are not installed. Install fury-sdk[voice]."
+                ) from exc
 
-            self.stt = whisper.load_model("base.en")
+            self.stt = WhisperModel("base.en")
+
+        try:
+            from .utils.audio import load_audio
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "Voice audio dependencies are not installed. Install fury-sdk[voice]."
+            ) from exc
 
         audio, _ = load_audio(
             io.BytesIO(base64.b64decode(base64_audio_bytes)), sr=16000, mono=True
         )
-        result = self.stt.transcribe(audio)
-        print(result["text"])
-        history.append({"role": "user", "content": result["text"]})
+        segments, _ = self.stt.transcribe(audio)
+        text = " ".join(segment.text.strip() for segment in segments).strip()
+        print(text)
+        history.append({"role": "user", "content": text})
         return history
 
     def speak(

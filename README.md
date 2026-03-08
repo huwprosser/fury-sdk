@@ -85,7 +85,7 @@ agent = Agent(
 
 response = agent.ask("Hello!", history=[])
 print(response)
-```
+```R
 
 ### Real Example
 

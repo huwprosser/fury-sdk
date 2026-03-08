@@ -1,7 +1,7 @@
 import json
 from typing import Any, Dict, List, Optional
 
-from openai import AsyncOpenAI
+from .llm_client import ChatClientProtocol
 from .validation import validate_message
 
 DEFAULT_SUMMARY_SYSTEM_PROMPT = (
@@ -41,7 +41,7 @@ class HistoryManager:
         history: Optional[List[Dict[str, Any]]] = None,
         *,
         agent: Optional["Agent"] = None,
-        client: Optional[AsyncOpenAI] = None,
+        client: Optional[ChatClientProtocol] = None,
         summary_model: Optional[str] = None,
         auto_compact: bool = True,
         context_window: int = 32768,

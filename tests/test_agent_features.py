@@ -436,14 +436,20 @@ def test_agent_accepts_image_result_from_tool_and_appends_multimodal_followup_me
 
 
 def test_agent_transcribes_voice_message_and_appends_user_text(monkeypatch):
+    class FakeSegment:
+        def __init__(self, text):
+            self.text = text
+
     class FakeWhisperModel:
         def transcribe(self, _audio):
-            return {"text": "transcribed text"}
+            return iter([FakeSegment("transcribed"), FakeSegment("text")]), {}
 
-    whisper_module = types.ModuleType("whisper")
-    whisper_module.load_model = lambda _name: FakeWhisperModel()
-    monkeypatch.setitem(sys.modules, "whisper", whisper_module)
-    monkeypatch.setattr("fury.agent.load_audio", lambda *args, **kwargs: (np.zeros(4), 16000))
+    faster_whisper_module = types.ModuleType("faster_whisper")
+    faster_whisper_module.WhisperModel = lambda _name: FakeWhisperModel()
+    monkeypatch.setitem(sys.modules, "faster_whisper", faster_whisper_module)
+    audio_module = types.ModuleType("fury.utils.audio")
+    audio_module.load_audio = lambda *args, **kwargs: (np.zeros(4), 16000)
+    monkeypatch.setitem(sys.modules, "fury.utils.audio", audio_module)
 
     agent = Agent(model="test-model", system_prompt="You are helpful.")
 

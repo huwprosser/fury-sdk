@@ -1,12 +1,11 @@
 """
 Voice chat example.
 
-Records microphone input, transcribes it with Whisper, streams the reply, and
+Records microphone input, transcribes it with faster-whisper, streams the reply, and
 plays TTS audio back to the user.
 
 Requirements:
-  - pip install sounddevice
-  - uv add "fury-sdk[tts]" (or pip install "fury-sdk[tts]")
+  - uv add "fury-sdk[voice,tts]" (or pip install "fury-sdk[voice,tts]")
   - espeak (brew install espeak)
 """
 
