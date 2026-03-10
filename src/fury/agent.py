@@ -16,7 +16,7 @@ from typing import (
     List,
     Optional,
     Any,
-    Union,
+    Literal,
 )
 from .llm_client import ChatClientProtocol, create_chat_client
 
@@ -34,7 +34,6 @@ class Tool:
     name: str
     description: str
     execute: Callable[..., Any]
-    announcement_phrase: Union[str, Callable[[Dict[str, Any]], str]]
     input_schema: Dict[str, Any]
     output_schema: Dict[str, Any]
 
@@ -44,7 +43,13 @@ class ToolCallEvent:
     tool_name: str
     arguments: Optional[Dict[str, Any]] = None
     result: Optional[Any] = None
-    announcement_phrase: Optional[str] = None
+
+
+@dataclass
+class ToolUiEvent:
+    id: str
+    title: str
+    type: Literal["tool_call", "other"]
 
 
 @dataclass
@@ -52,6 +57,7 @@ class ChatStreamEvent:
     content: Optional[str] = None
     reasoning: Optional[str] = None
     tool_call: Optional[ToolCallEvent] = None
+    tool_ui: Optional[ToolUiEvent] = None
 
 
 def _prune_unfinished_sentences(text: str) -> str:
@@ -75,7 +81,6 @@ def create_tool(
     id: str,
     description: str,
     execute: Callable[..., Any],
-    announcement_phrase: Union[str, Callable[[Dict[str, Any]], str]],
     input_schema: Dict[str, Any],
     output_schema: Dict[str, Any],
 ) -> Tool:
@@ -86,7 +91,6 @@ def create_tool(
         execute=execute,
         input_schema=input_schema,
         output_schema=output_schema,
-        announcement_phrase=announcement_phrase,
     )
 
 
@@ -401,16 +405,6 @@ class Agent:
             cprint(f"{label}: ", "yellow", end="")
             print(value)
 
-    def _build_tool_announcement_phrase(
-        self, tool_name: str, arguments: Dict[str, Any]
-    ) -> str:
-        """Create a human-readable announcement for a tool call."""
-        if tool_name in self.tool_objects:
-            phrase = str(self.tool_objects[tool_name].announcement_phrase)
-            return f"Using {phrase.replace('[args]', str(arguments))}..."
-
-        return f"Using {tool_name}..."
-
     def _normalize_tool_name(self, name: str) -> str:
         """Strip provider prefixes from tool names."""
         if name.startswith("functions."):
@@ -482,7 +476,9 @@ class Agent:
         return args
 
     async def _execute_parallel_tool(
-        self, tool_uses: List[Dict[str, Any]]
+        self,
+        tool_uses: List[Dict[str, Any]],
+        emit: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> List[Dict[str, Any]]:
         """Execute multiple tool calls concurrently and return their results."""
 
@@ -505,10 +501,7 @@ class Agent:
                 }
             func = self.available_functions[tool_name]
             try:
-                if inspect.iscoroutinefunction(func):
-                    result = await func(**params)
-                else:
-                    result = await asyncio.to_thread(func, **params)
+                result = await self._invoke_tool_callable(func, params, emit)
                 if isinstance(result, ToolResult):
                     result = result.content
                 return {"recipient_name": recipient_name, "result": result}
@@ -619,6 +612,7 @@ class Agent:
         for tool_call in tool_calls:
             fname = tool_call["function"]["name"]
             call_id = tool_call["id"]
+            missing_result = object()
 
             if fname not in self.available_functions:
                 continue
@@ -636,25 +630,32 @@ class Agent:
                 continue
 
             filtered_args = self._filter_args(fname, args)
-            announcement = self._build_tool_announcement_phrase(fname, filtered_args)
             yield ChatStreamEvent(
                 tool_call=ToolCallEvent(
                     tool_name=fname,
                     arguments=filtered_args,
-                    announcement_phrase=announcement,
                 )
             )
 
-            result = await self._execute_tool(fname, filtered_args)
-            normalized_result, output_schema = self._normalize_tool_result(result)
+            result = missing_result
+            async for event in self._execute_tool(fname, filtered_args):
+                if (
+                    event.tool_call
+                    and event.tool_call.tool_name == fname
+                    and event.tool_call.arguments is None
+                ):
+                    result = event.tool_call.result
+                yield event
+
+            normalized_result, output_schema = self._normalize_tool_result(
+                None if result is missing_result else result
+            )
             if output_schema:
                 yield ChatStreamEvent(reasoning=f"data_{json.dumps(output_schema)}")
 
-            yield ChatStreamEvent(
-                tool_call=ToolCallEvent(tool_name=fname, result=normalized_result)
+            tool_content, vision_message = self._format_multimodal_content(
+                normalized_result
             )
-
-            tool_content, vision_message = self._format_multimodal_content(normalized_result)
             active_history.append(
                 {
                     "tool_call_id": call_id,
@@ -666,15 +667,91 @@ class Agent:
             if vision_message:
                 active_history.append(vision_message)
 
-    async def _execute_tool(self, tool_name: str, args: Dict[str, Any]) -> Any:
-        func = self.available_functions[tool_name]
+    def _tool_accepts_emit(self, func: Callable[..., Any]) -> bool:
+        """Return True when the callable can receive a runtime-only emit callback."""
         try:
-            if inspect.iscoroutinefunction(func):
-                return await func(**args)
-            return func(**args)
-        except Exception as exc:
-            logger.exception(f"Error executing tool {tool_name}")
-            return f"Error: {str(exc)}"
+            parameters = inspect.signature(func).parameters.values()
+        except (TypeError, ValueError):
+            return False
+
+        return any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            or (
+                parameter.name == "emit"
+                and parameter.kind
+                in (
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                )
+            )
+            for parameter in parameters
+        )
+
+    async def _invoke_tool_callable(
+        self,
+        func: Callable[..., Any],
+        args: Dict[str, Any],
+        emit: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Any:
+        call_args = dict(args)
+        if emit is not None and self._tool_accepts_emit(func):
+            call_args["emit"] = emit
+
+        if inspect.iscoroutinefunction(func):
+            return await func(**call_args)
+        return await asyncio.to_thread(func, **call_args)
+
+    def _normalize_tool_ui_event(self, payload: Dict[str, Any]) -> ToolUiEvent:
+        if not isinstance(payload, dict):
+            raise TypeError("Tool UI event payload must be a dict")
+
+        event_id = payload.get("id")
+        title = payload.get("title")
+        event_type = payload.get("type")
+
+        if not isinstance(event_id, str) or not event_id:
+            raise ValueError("Tool UI event payload requires a non-empty string id")
+        if not isinstance(title, str) or not title:
+            raise ValueError("Tool UI event payload requires a non-empty string title")
+        if event_type not in ("tool_call", "other"):
+            raise ValueError(
+                "Tool UI event payload type must be 'tool_call' or 'other'"
+            )
+
+        return ToolUiEvent(id=event_id, title=title, type=event_type)
+
+    async def _execute_tool(
+        self, tool_name: str, args: Dict[str, Any]
+    ) -> AsyncGenerator[ChatStreamEvent, None]:
+        func = self.available_functions[tool_name]
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+        done = object()
+        loop = asyncio.get_running_loop()
+
+        def emit(payload: Dict[str, Any]) -> None:
+            event = self._normalize_tool_ui_event(payload)
+            loop.call_soon_threadsafe(queue.put_nowait, event)
+
+        async def run_tool() -> Any:
+            try:
+                return await self._invoke_tool_callable(func, args, emit)
+            except Exception as exc:
+                logger.exception(f"Error executing tool {tool_name}")
+                return f"Error: {str(exc)}"
+            finally:
+                loop.call_soon(queue.put_nowait, done)
+
+        task = asyncio.create_task(run_tool())
+
+        while True:
+            item = await queue.get()
+            if item is done:
+                break
+            yield ChatStreamEvent(tool_ui=item)
+
+        yield ChatStreamEvent(
+            tool_call=ToolCallEvent(tool_name=tool_name, result=(await task))
+        )
 
     def _normalize_tool_result(
         self, result: Any

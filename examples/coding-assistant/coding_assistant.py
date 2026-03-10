@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from termcolor import cprint
 from collections import deque
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from dotenv import load_dotenv
 from pydantic import BaseModel
@@ -63,6 +63,7 @@ READ_OUTPUT_SCHEMA = {"oneOf": [{"type": "string"}, {"type": "object"}]}
 BASH_OUTPUT_SCHEMA = {"type": "string"}
 WRITE_OUTPUT_SCHEMA = {"type": "string"}
 EDIT_OUTPUT_SCHEMA = {"type": "string"}
+ToolUiEmitter = Optional[Callable[[Dict[str, str]], None]]
 
 
 def get_model_schema(model: type[BaseModel]) -> Dict[str, Any]:
@@ -87,6 +88,17 @@ class Skill:
 
 def resolve_path(path: str) -> str:
     return os.path.abspath(os.path.expanduser(path))
+
+
+def emit_tool_ui(
+    emit: ToolUiEmitter,
+    event_id: str,
+    title: str,
+    event_type: str = "tool_call",
+) -> None:
+    if emit is None:
+        return
+    emit({"id": event_id, "title": title, "type": event_type})
 
 
 def truncate_text(text: str) -> tuple[str, bool, int, int]:
@@ -145,10 +157,16 @@ def read_text_file(path: str, offset: Optional[int], limit: Optional[int]) -> st
         return content
 
 
-def read_tool(path: str, offset: Optional[int] = None, limit: Optional[int] = None):
+def read_tool(
+    path: str,
+    offset: Optional[int] = None,
+    limit: Optional[int] = None,
+    emit: ToolUiEmitter = None,
+):
     print()
     cprint(f"Reading {path}...", "green")
     resolved_path = resolve_path(path)
+    emit_tool_ui(emit, f"read:{resolved_path}", f"Reading {resolved_path}")
     if not os.path.exists(resolved_path):
         return f"Error: path not found: {resolved_path}"
 
@@ -164,10 +182,13 @@ def read_tool(path: str, offset: Optional[int] = None, limit: Optional[int] = No
     return read_text_file(resolved_path, offset, limit)
 
 
-def bash_tool(command: str, timeout: Optional[int] = None):
+def bash_tool(
+    command: str, timeout: Optional[int] = None, emit: ToolUiEmitter = None
+):
     try:
         print()
         cprint(f"Running command {command}...", "cyan")
+        emit_tool_ui(emit, f"bash:{command}", f"Running command: {command}")
         result = subprocess.run(
             command,
             shell=True,
@@ -200,20 +221,27 @@ def bash_tool(command: str, timeout: Optional[int] = None):
     return truncated_text
 
 
-def write_tool(path: str, content: str):
+def write_tool(path: str, content: str, emit: ToolUiEmitter = None):
     print()
     cprint(f"Writing to {path}...", "magenta")
     resolved_path = resolve_path(path)
+    emit_tool_ui(emit, f"write:{resolved_path}", f"Writing {resolved_path}")
     os.makedirs(os.path.dirname(resolved_path) or ".", exist_ok=True)
     with open(resolved_path, "w", encoding="utf-8") as handle:
         handle.write(content)
     return f"Wrote {len(content)} characters to {resolved_path}"
 
 
-def edit_tool(path: str, old_text: str, new_text: str):
+def edit_tool(
+    path: str,
+    old_text: str,
+    new_text: str,
+    emit: ToolUiEmitter = None,
+):
     print()
     cprint(f"Editing {path}...", "red")
     resolved_path = resolve_path(path)
+    emit_tool_ui(emit, f"edit:{resolved_path}", f"Editing {resolved_path}")
     if not os.path.exists(resolved_path):
         return f"Error: path not found: {resolved_path}"
 
@@ -467,36 +495,32 @@ async def main():
         system_prompt=build_prompt(),
         tools=[
             create_tool(
-                "read",
-                "Read file contents (text or image). Supports offset/limit for text files.",
-                read_tool,
-                "Reading [path]...",
-                get_model_schema(ReadInput),
-                READ_OUTPUT_SCHEMA,
+                id="read",
+                description="Read file contents (text or image). Supports offset/limit for text files.",
+                execute=read_tool,
+                input_schema=get_model_schema(ReadInput),
+                output_schema=READ_OUTPUT_SCHEMA,
             ),
             create_tool(
-                "bash",
-                "Execute a bash command in the current working directory.",
-                bash_tool,
-                "Running command...",
-                get_model_schema(BashInput),
-                BASH_OUTPUT_SCHEMA,
+                id="bash",
+                description="Execute a bash command in the current working directory.",
+                execute=bash_tool,
+                input_schema=get_model_schema(BashInput),
+                output_schema=BASH_OUTPUT_SCHEMA,
             ),
             create_tool(
-                "write",
-                "Write content to a file, creating parent directories if needed.",
-                write_tool,
-                "Writing to [path]...",
-                get_model_schema(WriteInput),
-                WRITE_OUTPUT_SCHEMA,
+                id="write",
+                description="Write content to a file, creating parent directories if needed.",
+                execute=write_tool,
+                input_schema=get_model_schema(WriteInput),
+                output_schema=WRITE_OUTPUT_SCHEMA,
             ),
             create_tool(
-                "edit",
-                "Replace exact text in a file with new text.",
-                edit_tool,
-                "Editing [path]...",
-                get_model_schema(EditInput),
-                EDIT_OUTPUT_SCHEMA,
+                id="edit",
+                description="Replace exact text in a file with new text.",
+                execute=edit_tool,
+                input_schema=get_model_schema(EditInput),
+                output_schema=EDIT_OUTPUT_SCHEMA,
             ),
         ],
     )
@@ -512,15 +536,21 @@ async def main():
         buffer = []
         last_stream_kind = None
         async for event in agent.chat(history_manager.history, True):
+            if event.tool_ui:
+                if last_stream_kind in {"chunk", "reasoning"}:
+                    print()
+                last_stream_kind = "tool_ui"
+                cprint(event.tool_ui.title, "cyan")
+
             if event.content:
-                if last_stream_kind == "reasoning":
+                if last_stream_kind in {"reasoning", "tool_ui"}:
                     print()
                 last_stream_kind = "chunk"
                 buffer.append(event.content)
                 print(event.content, end="", flush=True)
 
             if event.reasoning:
-                if last_stream_kind == "chunk":
+                if last_stream_kind in {"chunk", "tool_ui"}:
                     print()
                 last_stream_kind = "reasoning"
                 cprint(event.reasoning, "grey", end="", flush=True)

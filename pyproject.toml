@@ -1,11 +1,12 @@
 [project]
 name = "fury-sdk"
-version = "0.0.15"
+version = "0.0.17"
 description = "A flexible AI agent library with tool support"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "httpx>=0.28.1",
+    "numpy>=2.2.6",
     "termcolor",
 ]
 

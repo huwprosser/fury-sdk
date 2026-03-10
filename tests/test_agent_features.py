@@ -1,6 +1,7 @@
 import asyncio
 import json
 import sys
+import time
 import types
 
 import numpy as np
@@ -137,6 +138,19 @@ def test_agent_prunes_unfinished_streamed_sentences_when_requested():
     ]
 
 
+def test_create_tool_uses_input_and_output_schemas():
+    tool = create_tool(
+        "noop",
+        "Do nothing.",
+        lambda: None,
+        {"type": "object", "properties": {}, "required": []},
+        {"type": "object", "properties": {}, "required": []},
+    )
+
+    assert tool.input_schema == {"type": "object", "properties": {}, "required": []}
+    assert tool.output_schema == {"type": "object", "properties": {}, "required": []}
+
+
 def test_agent_executes_single_tool_and_returns_final_answer():
     called = {}
 
@@ -148,7 +162,6 @@ def test_agent_executes_single_tool_and_returns_final_answer():
         "add",
         "Add two numbers.",
         add,
-        "Adding [args]",
         {
             "type": "object",
             "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
@@ -183,13 +196,151 @@ def test_agent_executes_single_tool_and_returns_final_answer():
 
     assert called["args"] == (2, 3)
     assert any(
-        event.tool_call and event.tool_call.announcement_phrase == "Using Adding {'a': 2, 'b': 3}..."
+        event.tool_call and event.tool_call.arguments == {"a": 2, "b": 3}
         for event in events
     )
     assert any(
         event.tool_call and event.tool_call.result == {"result": 5} for event in events
     )
     assert "".join(event.content for event in events if event.content) == "The sum is 5."
+
+
+def test_agent_streams_tool_ui_events_for_sync_tools_without_exposing_emit_in_schema():
+    def search(query, emit):
+        assert callable(emit)
+        emit(
+            {
+                "id": "search-1",
+                "title": "Searching for latest react version",
+                "type": "tool_call",
+            }
+        )
+        time.sleep(0.01)
+        emit(
+            {
+                "id": "search-1",
+                "title": "Found latest react version",
+                "type": "tool_call",
+            }
+        )
+        return {"status": "done", "query": query}
+
+    tool = create_tool(
+        id="search",
+        description="Search for something.",
+        execute=search,
+        input_schema={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                "status": {"type": "string"},
+                "query": {"type": "string"},
+            },
+        },
+    )
+
+    create = SequencedCreate(
+        [
+            FakeCompletion(
+                [
+                    FakeDelta(
+                        tool_calls=[
+                            FakeToolCallChunk(
+                                0,
+                                id="call_1",
+                                name="search",
+                                arguments='{"query": "latest react version"}',
+                            )
+                        ]
+                    )
+                ]
+            ),
+            FakeCompletion([FakeDelta(content="Search complete.")]),
+        ]
+    )
+    agent = Agent(model="test-model", system_prompt="You are helpful.", tools=[tool])
+    agent.client = make_fake_client(create)
+
+    events = collect_chat(agent, [{"role": "user", "content": "search"}])
+
+    ui_events = [event.tool_ui for event in events if event.tool_ui]
+    assert [(event.id, event.title, event.type) for event in ui_events] == [
+        ("search-1", "Searching for latest react version", "tool_call"),
+        ("search-1", "Found latest react version", "tool_call"),
+    ]
+    assert [
+        "tool_call"
+        if event.tool_call and event.tool_call.arguments is not None
+        else "tool_ui"
+        if event.tool_ui
+        else "result"
+        if event.tool_call and event.tool_call.arguments is None
+        else "content"
+        for event in events
+    ] == ["tool_call", "tool_ui", "tool_ui", "result", "content"]
+
+    search_schema = next(
+        tool_def["function"]["parameters"]
+        for tool_def in create.calls[0]["tools"]
+        if tool_def["function"]["name"] == "search"
+    )
+    assert "emit" not in search_schema.get("properties", {})
+
+
+def test_agent_streams_tool_ui_events_for_async_tools():
+    async def search(query, emit):
+        emit({"id": "phase-1", "title": f"Queued {query}", "type": "other"})
+        await asyncio.sleep(0)
+        emit({"id": "phase-2", "title": f"Fetched {query}", "type": "tool_call"})
+        return {"status": "done"}
+
+    tool = create_tool(
+        id="search_async",
+        description="Search asynchronously.",
+        execute=search,
+        input_schema={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        output_schema={"type": "object", "properties": {"status": {"type": "string"}}},
+    )
+
+    create = SequencedCreate(
+        [
+            FakeCompletion(
+                [
+                    FakeDelta(
+                        tool_calls=[
+                            FakeToolCallChunk(
+                                0,
+                                id="call_1",
+                                name="search_async",
+                                arguments='{"query": "release notes"}',
+                            )
+                        ]
+                    )
+                ]
+            ),
+            FakeCompletion([FakeDelta(content="Async search complete.")]),
+        ]
+    )
+    agent = Agent(model="test-model", system_prompt="You are helpful.", tools=[tool])
+    agent.client = make_fake_client(create)
+
+    events = collect_chat(agent, [{"role": "user", "content": "search"}])
+
+    assert [(event.tool_ui.id, event.tool_ui.title, event.tool_ui.type) for event in events if event.tool_ui] == [
+        ("phase-1", "Queued release notes", "other"),
+        ("phase-2", "Fetched release notes", "tool_call"),
+    ]
+    assert any(
+        event.tool_call and event.tool_call.result == {"status": "done"} for event in events
+    )
 
 
 def test_agent_filters_hallucinated_tool_arguments():
@@ -203,7 +354,6 @@ def test_agent_filters_hallucinated_tool_arguments():
         "echo",
         "Echo text.",
         echo,
-        "Echoing [args]",
         {
             "type": "object",
             "properties": {"text": {"type": "string"}},
@@ -250,7 +400,6 @@ def test_agent_surfaces_tool_execution_errors_without_crashing_conversation():
         "explode",
         "Fail on purpose.",
         explode,
-        "Exploding",
         {"type": "object", "properties": {}, "required": []},
         {"type": "object", "properties": {}},
     )
@@ -371,6 +520,50 @@ def test_agent_executes_parallel_tool_wrapper_for_independent_tools():
     ]]
 
 
+def test_parallel_tool_wrapper_forwards_tool_ui_events_from_nested_tools():
+    def one(emit):
+        emit({"id": "one", "title": "Running one", "type": "tool_call"})
+        return 1
+
+    create = SequencedCreate(
+        [
+            FakeCompletion(
+                [
+                    FakeDelta(
+                        tool_calls=[
+                            FakeToolCallChunk(
+                                0,
+                                id="call_1",
+                                name="multi_tool_use.parallel",
+                                arguments=json.dumps(
+                                    {
+                                        "tool_uses": [
+                                            {
+                                                "recipient_name": "one",
+                                                "parameters": {},
+                                            }
+                                        ]
+                                    }
+                                ),
+                            )
+                        ]
+                    )
+                ]
+            ),
+            FakeCompletion([FakeDelta(content="Parallel complete")]),
+        ]
+    )
+    agent = Agent(model="test-model", system_prompt="You are helpful.")
+    agent.available_functions["one"] = one
+    agent.client = make_fake_client(create)
+
+    events = collect_chat(agent, [{"role": "user", "content": "run one"}])
+
+    assert [(event.tool_ui.id, event.tool_ui.title, event.tool_ui.type) for event in events if event.tool_ui] == [
+        ("one", "Running one", "tool_call")
+    ]
+
+
 def test_agent_rejects_nested_parallel_tool_calls():
     agent = Agent(model="test-model", system_prompt="You are helpful.")
 
@@ -398,7 +591,6 @@ def test_agent_accepts_image_result_from_tool_and_appends_multimodal_followup_me
         "camera",
         "Capture an image.",
         lambda: {"description": "snapshot", "image_base64": "ZmFrZQ=="},
-        "Capturing",
         {"type": "object", "properties": {}, "required": []},
         {"type": "object", "properties": {}},
     )

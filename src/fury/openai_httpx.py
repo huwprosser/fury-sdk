@@ -127,8 +127,14 @@ class AsyncStreamChatCompletions(AsyncIterator[ChatCompletionChunk]):
         while True:
             if self._response is None:
                 await self._open_stream()
+                if self._response is None:
+                    continue
 
-            assert self._lines is not None
+            if self._lines is None:
+                await self.aclose()
+                raise RuntimeError(
+                    "Fury opened a chat stream without initializing the SSE iterator."
+                )
 
             try:
                 async for line in self._lines:

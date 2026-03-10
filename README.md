@@ -209,7 +209,15 @@ Learn more in the [OpenAI guide](https://developers.openai.com/api/docs/guides/f
 from fury import Agent, create_tool
 
 # Define the function
-def add(a: int, b: int):
+def add(a: int, b: int, emit=None):
+    if emit:
+        emit(
+            {
+                "id": "add",
+                "title": f"Adding {a} and {b}",
+                "type": "tool_call",
+            }
+        )
     return {"result": a + b}
 
 # Create the tool
@@ -217,7 +225,6 @@ add_tool = create_tool(
     id="add",
     description="Add two numbers together",
     execute=add,
-    announcement_phrase="Adding numbers...",
     input_schema={
         "type": "object",
         "properties": {
@@ -236,6 +243,16 @@ add_tool = create_tool(
 # Pass to agent
 agent = Agent(..., tools=[add_tool])
 ```
+
+If your tool accepts an `emit` parameter, Fury injects a runtime-only callback during execution so the tool can stream structured UI events without exposing `emit` in the model-facing schema.
+
+```python
+def search(query: str, emit):
+    emit({"id": "search-1", "title": f"Searching for {query}", "type": "tool_call"})
+    return {"query": query}
+```
+
+These arrive in the chat stream as `event.tool_ui`, separate from `event.tool_call`.
 
 ### Coding Assistant Example
 

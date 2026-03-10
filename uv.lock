@@ -900,10 +900,12 @@ http = [
 
 [[package]]
 name = "fury-sdk"
-version = "0.0.15"
+version = "0.0.17"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "termcolor" },
 ]
 
@@ -943,6 +945,7 @@ requires-dist = [
     { name = "huggingface-hub", marker = "extra == 'tts'", specifier = ">=1.4.1" },
     { name = "llama-cpp-python", marker = "extra == 'tts'" },
     { name = "neucodec", marker = "extra == 'tts'" },
+    { name = "numpy", specifier = ">=2.2.6" },
     { name = "numpy", marker = "extra == 'tts'" },
     { name = "numpy", marker = "extra == 'voice'" },
     { name = "onnxruntime", marker = "extra == 'tts'", specifier = ">=1.17.3,<1.24" },

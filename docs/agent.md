@@ -53,14 +53,21 @@ Tools are defined with `create_tool()` and passed to the agent. The agent filter
 ```python
 from fury import Agent, create_tool
 
-def add(a: int, b: int):
+def add(a: int, b: int, emit=None):
+    if emit:
+        emit(
+            {
+                "id": "add",
+                "title": f"Adding {a} and {b}",
+                "type": "tool_call",
+            }
+        )
     return {"result": a + b}
 
 add_tool = create_tool(
     id="add",
     description="Add two numbers together",
     execute=add,
-    announcement_phrase="Adding numbers...",
     input_schema={
         "type": "object",
         "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
@@ -79,6 +86,22 @@ agent = Agent(
     tools=[add_tool],
 )
 ```
+
+If a tool function accepts an `emit` argument, Fury injects a runtime-only callback while the tool runs. `emit` is not added to the tool schema sent to the model.
+
+```python
+def search(query: str, emit):
+    emit(
+        {
+            "id": "search-1",
+            "title": f"Searching for {query}",
+            "type": "tool_call",
+        }
+    )
+    return {"query": query}
+```
+
+Stream consumers receive these as `ChatStreamEvent(tool_ui=...)`, separate from `tool_call` arguments and results.
 
 ## History Management
 

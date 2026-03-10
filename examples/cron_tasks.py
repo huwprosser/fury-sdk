@@ -5,8 +5,16 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 
-def check_time():
+def check_time(emit=None):
     now = datetime.now().isoformat(timespec="seconds")
+    if emit:
+        emit(
+            {
+                "id": "check-time",
+                "title": "Checking the current time",
+                "type": "tool_call",
+            }
+        )
     return {"current_time": now}
 
 
@@ -16,12 +24,11 @@ background_tasks = [
         "prompt": "What time is it right now? Use the check_time tool. If it's in the morning, say 'good morning' and if it's in the afternoon, say 'good afternoon'.",
         "tools": [
             create_tool(
-                "check_time",
-                "Return the current local time as an ISO-8601 string.",
-                check_time,
-                "Checking the time...",
-                {"type": "object", "properties": {}, "required": []},
-                {"type": "object", "properties": {}, "required": []},
+                id="check_time",
+                description="Return the current local time as an ISO-8601 string.",
+                execute=check_time,
+                input_schema={"type": "object", "properties": {}, "required": []},
+                output_schema={"type": "object", "properties": {}, "required": []},
             )
         ],
         "schedule": "*/10 * * * * *",
@@ -42,6 +49,8 @@ async def run_job(task: dict):
         [{"role": "user", "content": task["prompt"]}],
         reasoning=task["reasoning"],
     ):
+        if event.tool_ui:
+            print(f"[{task['name']}] {event.tool_ui.title}")
         if event.content:
             buffer.append(event.content)
 
