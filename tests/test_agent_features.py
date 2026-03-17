@@ -4,6 +4,7 @@ import sys
 import time
 import types
 
+import httpx
 import numpy as np
 import pytest
 
@@ -14,6 +15,7 @@ from conftest import (
     FakeDelta,
     FakeToolCallChunk,
     SequencedCreate,
+    SlowFakeCompletion,
     make_fake_client,
 )
 
@@ -518,6 +520,184 @@ def test_agent_executes_parallel_tool_wrapper_for_independent_tools():
         {"recipient_name": "one", "result": 1},
         {"recipient_name": "two", "result": 2},
     ]]
+
+
+def test_chat_cancel_discards_partial_response_and_closes_stream():
+    completion = SlowFakeCompletion(
+        [FakeDelta(content="Hello"), FakeDelta(content=" world")]
+    )
+    create = SequencedCreate([completion])
+    agent = Agent(model="test-model", system_prompt="You are helpful.")
+    agent.client = make_fake_client(create)
+
+    async def run():
+        history = [{"role": "user", "content": "stream text"}]
+        runner = agent.runner()
+        events = []
+
+        async for event in runner.chat(history):
+            events.append(event)
+            if event.content == "Hello":
+                runner.cancel()
+
+        return history, events, runner
+
+    history, events, runner = asyncio.run(run())
+
+    assert [event.content for event in events if event.content] == ["Hello"]
+    assert history == [{"role": "user", "content": "stream text"}]
+    assert runner.cancelled is True
+    assert runner.partial_response == "Hello"
+    assert completion.closed is True
+
+
+def test_chat_interrupt_preserves_partial_response_in_history():
+    completion = SlowFakeCompletion(
+        [FakeDelta(content="Hello"), FakeDelta(content=" world")]
+    )
+    create = SequencedCreate([completion])
+    agent = Agent(model="test-model", system_prompt="You are helpful.")
+    agent.client = make_fake_client(create)
+
+    async def run():
+        history = [{"role": "user", "content": "stream text"}]
+        runner = agent.runner()
+        events = []
+
+        async for event in runner.chat(history):
+            events.append(event)
+            if event.content == "Hello":
+                runner.interrupt()
+
+        return history, events, runner
+
+    history, events, runner = asyncio.run(run())
+
+    assert [event.content for event in events if event.content] == ["Hello"]
+    assert history == [
+        {"role": "user", "content": "stream text"},
+        {"role": "assistant", "content": "Hello"},
+    ]
+    assert runner.interrupted is True
+    assert runner.partial_response == "Hello"
+    assert completion.closed is True
+
+
+def test_chat_interrupt_swallows_expected_transport_error(caplog):
+    class InterruptReadErrorCompletion(SlowFakeCompletion):
+        async def __anext__(self):
+            if self.closed:
+                raise httpx.ReadError("stream closed")
+            if self._index > 0:
+                try:
+                    await asyncio.wait_for(self._wake.wait(), timeout=self.delay)
+                except asyncio.TimeoutError:
+                    pass
+                self._wake.clear()
+                if self.closed:
+                    raise httpx.ReadError("stream closed")
+            return await super(SlowFakeCompletion, self).__anext__()
+
+    completion = InterruptReadErrorCompletion(
+        [FakeDelta(content="Hello"), FakeDelta(content=" world")]
+    )
+    create = SequencedCreate([completion])
+    agent = Agent(model="test-model", system_prompt="You are helpful.")
+    agent.client = make_fake_client(create)
+
+    async def run():
+        history = [{"role": "user", "content": "stream text"}]
+        runner = agent.runner()
+        events = []
+
+        async def interrupt_when_streaming():
+            while runner.partial_response != "Hello":
+                await asyncio.sleep(0.01)
+            runner.interrupt()
+
+        interrupter = asyncio.create_task(interrupt_when_streaming())
+        async for event in runner.chat(history):
+            events.append(event)
+        await interrupter
+        return history, events, runner
+
+    with caplog.at_level("ERROR"):
+        history, events, runner = asyncio.run(run())
+
+    assert [event.content for event in events if event.content] == ["Hello"]
+    assert history == [
+        {"role": "user", "content": "stream text"},
+        {"role": "assistant", "content": "Hello"},
+    ]
+    assert runner.interrupted is True
+    assert "Error in chat" not in caplog.text
+
+
+def test_runner_interrupt_preserves_partial_response_without_duplicate_history():
+    completion = SlowFakeCompletion(
+        [FakeDelta(content="Hello"), FakeDelta(content=" world")]
+    )
+    create = SequencedCreate([completion])
+    agent = Agent(model="test-model", system_prompt="You are helpful.")
+    agent.client = make_fake_client(create)
+
+    async def run():
+        history = [{"role": "user", "content": "stream text"}]
+        runner = agent.runner()
+        response = []
+
+        async def interrupt_when_streaming():
+            while runner.partial_response != "Hello":
+                await asyncio.sleep(0.01)
+            runner.interrupt()
+
+        interrupter = asyncio.create_task(interrupt_when_streaming())
+        async for event in runner.chat(history):
+            if event.content:
+                response.append(event.content)
+        await interrupter
+        return history, "".join(response), runner
+
+    history, response, runner = asyncio.run(run())
+
+    assert response == "Hello"
+    assert history == [
+        {"role": "user", "content": "stream text"},
+        {"role": "assistant", "content": "Hello"},
+    ]
+    assert runner.interrupted is True
+
+
+def test_runner_cancel_discards_partial_history():
+    completion = SlowFakeCompletion(
+        [FakeDelta(content="Hello"), FakeDelta(content=" world")]
+    )
+    create = SequencedCreate([completion])
+    agent = Agent(model="test-model", system_prompt="You are helpful.")
+    agent.client = make_fake_client(create)
+
+    async def run():
+        history = [{"role": "user", "content": "stream text"}]
+        runner = agent.runner()
+        response = []
+
+        async def cancel_when_streaming():
+            while runner.partial_response != "Hello":
+                await asyncio.sleep(0.01)
+            runner.cancel()
+
+        canceller = asyncio.create_task(cancel_when_streaming())
+        async for event in runner.chat(history):
+            if event.content:
+                response.append(event.content)
+        await canceller
+        return history, "".join(response), runner
+
+    history, response, runner = asyncio.run(run())
+
+    assert response == "Hello"
+    assert history == [{"role": "user", "content": "stream text"}]
+    assert runner.cancelled is True
 
 
 def test_parallel_tool_wrapper_forwards_tool_ui_events_from_nested_tools():

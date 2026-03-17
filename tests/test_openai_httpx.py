@@ -1,6 +1,6 @@
 import asyncio
 
-from fury.openai_httpx import (
+from fury.transport import (
     AsyncStreamChatCompletions,
     ChatCompletionChunk,
     RetryConfig,

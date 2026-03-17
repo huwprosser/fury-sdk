@@ -1,10 +1,11 @@
 # Agent
 
-The `Agent` class is the core runtime for chatting with an OpenAI-compatible model while supporting tool calling, multimodal inputs, and streaming responses. It wraps an `AsyncOpenAI` client and provides both streaming (`chat`) and single-shot (`ask`, `ask_async`) interfaces.
+The `Agent` class is the core runtime for chatting with an OpenAI-compatible model while supporting tool calling, multimodal inputs, and streaming responses. It provides single-shot (`ask`, `ask_async`) interfaces and creates `Runner` objects for streaming runs.
 
 ## Key Features
 
-- **Streaming chat** via `Agent.chat()`.
+- **Streaming chat** via `Runner.chat()`.
+- **Interruptible generation** via `Runner.cancel()` and `Runner.interrupt()`.
 - **Tool calling** through `create_tool()` and registered tools.
 - **Parallel tool execution** using the built-in `multi_tool_use.parallel` wrapper.
 - **Multimodal inputs** with helper methods for images and voice messages.
@@ -39,9 +40,43 @@ agent = Agent(
 
 async def main():
     history = [{"role": "user", "content": "Hello"}]
-    async for event in agent.chat(history, reasoning=False):
+    runner = agent.runner()
+    async for event in runner.chat(history, reasoning=False):
         if event.content:
             print(event.content, end="", flush=True)
+
+asyncio.run(main())
+```
+
+## Cancelling Or Interrupting A Generation
+
+Use `agent.runner()` when you want to stream a reply and optionally stop it before completion.
+
+- `runner.cancel()`: stops the in-flight request and discards the partial assistant response from history.
+- `runner.interrupt()`: stops the in-flight request and preserves the partial assistant response by appending it to the provided history.
+- For the minimal version, see `docs/interruption.md`.
+- For a runnable example, see `examples/interruption.py`.
+
+```python
+import asyncio
+from fury import Agent
+
+agent = Agent(
+    model="your-model-name",
+    system_prompt="You are a helpful assistant.",
+)
+
+async def main():
+    history = [{"role": "user", "content": "Explain TCP in detail."}]
+    runner = agent.runner()
+
+    async for event in runner.chat(history):
+        if event.content:
+            print(event.content, end="", flush=True)
+            runner.interrupt()
+
+    print("\nPartial response:", runner.partial_response)
+    print("Updated history:", history)
 
 asyncio.run(main())
 ```
@@ -109,8 +144,12 @@ Stream consumers receive these as `ChatStreamEvent(tool_ui=...)`, separate from 
 
 ## Multimodal Helpers
 
-- `add_image_to_history(history, image_path)`: Appends a base64 image payload to the last history item.
-- `add_voice_message_to_history(history, base64_audio_bytes)`: Transcribes audio via Whisper and appends the resulting text as a user message.
+For managed histories, prefer:
+
+- `await history_manager.add_image(image_path, text="...")`
+- `await history_manager.add_voice(base64_audio_bytes)`
+
+`Agent` still exposes lower-level helpers for direct list-based history management.
 
 ## Text-to-Speech
 

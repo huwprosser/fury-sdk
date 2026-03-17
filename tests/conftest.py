@@ -1,6 +1,7 @@
 import importlib.util
 import sys
 import types
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -30,6 +31,7 @@ class FakeCompletion:
     def __init__(self, deltas):
         self._deltas = list(deltas)
         self._index = 0
+        self.closed = False
 
     def __aiter__(self):
         self._index = 0
@@ -41,6 +43,33 @@ class FakeCompletion:
         delta = self._deltas[self._index]
         self._index += 1
         return FakeChunk(delta)
+
+    async def aclose(self):
+        self.closed = True
+
+
+class SlowFakeCompletion(FakeCompletion):
+    def __init__(self, deltas, delay=0.05):
+        super().__init__(deltas)
+        self.delay = delay
+        self._wake = asyncio.Event()
+
+    async def __anext__(self):
+        if self.closed:
+            raise StopAsyncIteration
+        if self._index > 0:
+            try:
+                await asyncio.wait_for(self._wake.wait(), timeout=self.delay)
+            except asyncio.TimeoutError:
+                pass
+            self._wake.clear()
+            if self.closed:
+                raise StopAsyncIteration
+        return await super().__anext__()
+
+    async def aclose(self):
+        self.closed = True
+        self._wake.set()
 
 
 class FakeToolFunction:

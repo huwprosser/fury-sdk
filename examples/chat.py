@@ -3,7 +3,7 @@ import asyncio
 from fury import Agent, HistoryManager
 
 agent = Agent(
-    model="unsloth/GLM-4.6V-Flash-GGUF:Q8_0",
+    model="unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_X",
     system_prompt="You are a helpful assistant.",
 )
 
@@ -12,13 +12,15 @@ history_manager = HistoryManager(agent=agent)
 
 async def main() -> None:
     while True:
+        print()
         user_input = input("> ")
 
         await history_manager.add({"role": "user", "content": user_input})
 
         buffer = ""
 
-        async for event in agent.chat(history_manager.history):
+        runner = agent.runner()
+        async for event in runner.chat(history_manager.history):
             if event.content:
                 buffer += event.content
                 print(event.content, end="", flush=True)

@@ -6,6 +6,7 @@ import random
 import time
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
+from types import SimpleNamespace
 from typing import Any, AsyncIterator, Dict, List, Optional
 from urllib.parse import urljoin
 
@@ -13,64 +14,8 @@ import httpx
 
 
 @dataclass
-class ChatCompletionMessage:
-    """Minimal non-streaming message object used by HistoryManager."""
-
-    content: Optional[str]
-
-
-@dataclass
-class ChatCompletionChoice:
-    """Minimal non-streaming choice object used by HistoryManager."""
-
-    message: ChatCompletionMessage
-
-
-@dataclass
-class ChatCompletionResponse:
-    """Minimal non-streaming response object used by HistoryManager."""
-
-    choices: List[ChatCompletionChoice]
-
-
-@dataclass
-class ToolCallFunctionDelta:
-    """Incremental function payload emitted during streaming tool calls."""
-
-    name: Optional[str] = None
-    arguments: Optional[str] = None
-
-
-@dataclass
-class ToolCallDelta:
-    """Incremental tool call payload emitted in streaming chunks."""
-
-    index: int
-    id: Optional[str] = None
-    function: Optional[ToolCallFunctionDelta] = None
-
-
-@dataclass
-class ChatCompletionDelta:
-    """Streaming delta object matching the fields Fury reads today."""
-
-    content: Optional[str] = None
-    reasoning_content: Optional[str] = None
-    tool_calls: Optional[List[ToolCallDelta]] = None
-
-
-@dataclass
-class ChatCompletionChunkChoice:
-    """Streaming choice object with a delta payload."""
-
-    delta: ChatCompletionDelta
-
-
-@dataclass
 class ChatCompletionChunk:
-    """Streaming chunk object yielded by the async iterator."""
-
-    choices: List[ChatCompletionChunkChoice]
+    choices: List[Any]
 
 
 class APIStatusError(Exception):
@@ -259,7 +204,7 @@ class AsyncChatCompletions:
         tools: Optional[List[Dict[str, Any]]] = None,
         extra_body: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
-    ) -> ChatCompletionResponse | AsyncStreamChatCompletions:
+    ) -> Any:
         payload: Dict[str, Any] = {"model": model, "messages": messages}
         if tools is not None:
             payload["tools"] = tools
@@ -387,24 +332,19 @@ def _join_url(base_url: str, path: str) -> str:
     return urljoin(normalized, path)
 
 
-def _parse_chat_completion_response(payload: Dict[str, Any]) -> ChatCompletionResponse:
-    raw_choices = payload.get("choices") or []
-    choices: List[ChatCompletionChoice] = []
+def _ns(**kwargs: Any) -> SimpleNamespace:
+    return SimpleNamespace(**kwargs)
+
+
+def _parse_chat_completion_response(payload: Dict[str, Any]) -> Any:
+    raw_choices = payload.get("choices") or [{}]
+    choices = []
 
     for raw_choice in raw_choices:
         message = raw_choice.get("message") or {}
-        choices.append(
-            ChatCompletionChoice(
-                message=ChatCompletionMessage(content=message.get("content"))
-            )
-        )
+        choices.append(_ns(message=_ns(content=message.get("content"))))
 
-    if not choices:
-        choices.append(
-            ChatCompletionChoice(message=ChatCompletionMessage(content=None))
-        )
-
-    return ChatCompletionResponse(choices=choices)
+    return _ns(choices=choices)
 
 
 def _parse_stream_chunk(payload: Dict[str, Any]) -> Optional[ChatCompletionChunk]:
@@ -412,12 +352,12 @@ def _parse_stream_chunk(payload: Dict[str, Any]) -> Optional[ChatCompletionChunk
     if not raw_choices:
         return None
 
-    parsed_choices: List[ChatCompletionChunkChoice] = []
+    parsed_choices: List[Any] = []
     for raw_choice in raw_choices:
         raw_delta = raw_choice.get("delta") or {}
         parsed_choices.append(
-            ChatCompletionChunkChoice(
-                delta=ChatCompletionDelta(
+            _ns(
+                delta=_ns(
                     content=raw_delta.get("content"),
                     reasoning_content=raw_delta.get("reasoning_content"),
                     tool_calls=_parse_tool_call_deltas(raw_delta.get("tool_calls")),
@@ -428,20 +368,20 @@ def _parse_stream_chunk(payload: Dict[str, Any]) -> Optional[ChatCompletionChunk
     return ChatCompletionChunk(choices=parsed_choices)
 
 
-def _parse_tool_call_deltas(raw_tool_calls: Any) -> Optional[List[ToolCallDelta]]:
+def _parse_tool_call_deltas(raw_tool_calls: Any) -> Optional[List[Any]]:
     if not isinstance(raw_tool_calls, list):
         return None
 
-    deltas: List[ToolCallDelta] = []
+    deltas: List[Any] = []
     for raw_tool_call in raw_tool_calls:
         if not isinstance(raw_tool_call, dict):
             continue
         function = raw_tool_call.get("function") or {}
         deltas.append(
-            ToolCallDelta(
+            _ns(
                 index=int(raw_tool_call.get("index", 0)),
                 id=raw_tool_call.get("id"),
-                function=ToolCallFunctionDelta(
+                function=_ns(
                     name=function.get("name"),
                     arguments=function.get("arguments"),
                 ),

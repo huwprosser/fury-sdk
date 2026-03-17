@@ -12,17 +12,18 @@ Requirements:
 import asyncio
 import base64
 import io
+from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
 
-from fury import Agent
+from fury import Agent, HistoryManager
 
 RECORD_SECONDS = 5.0
 INPUT_SAMPLE_RATE = 16000
 OUTPUT_SAMPLE_RATE = 24000
-REF_AUDIO_PATH = "resources/ref.wav"
+REF_AUDIO_PATH = Path(__file__).resolve().parent / "resources" / "ref.wav"
 REF_TEXT = "Welcome home sir."
 
 
@@ -55,31 +56,32 @@ async def main() -> None:
     agent.speak(
         text=".",
         ref_text=REF_TEXT,
-        ref_audio_path=REF_AUDIO_PATH,
+        ref_audio_path=str(REF_AUDIO_PATH),
     )
 
-    history = []
+    history_manager = HistoryManager(agent=agent, auto_compact=False)
 
     while True:
         input("Press Enter to record: ").strip()
 
         audio_b64 = record_audio(RECORD_SECONDS, INPUT_SAMPLE_RATE)
-        agent.add_voice_message_to_history(history, audio_b64)
+        await history_manager.add_voice(audio_b64)
 
-        transcript = history[-1]["content"].strip()
+        transcript = history_manager.history[-1]["content"].strip()
         print(f"You said: {transcript}")
         if transcript.lower() in {"q", "quit", "exit"}:
             break
 
         print("Assistant:")
         reply = ""
-        async for event in agent.chat(history):
+        runner = agent.runner()
+        async for event in runner.chat(history_manager.history):
             if event.content:
                 reply += event.content
                 print(event.content, end="", flush=True)
         print()
 
-        history.append({"role": "assistant", "content": reply})
+        await history_manager.add({"role": "assistant", "content": reply})
 
         if reply.strip():
             print("Generating TTS audio...")
@@ -87,7 +89,7 @@ async def main() -> None:
                 agent.speak(
                     text=reply,
                     ref_text=REF_TEXT,
-                    ref_audio_path=REF_AUDIO_PATH,
+                    ref_audio_path=str(REF_AUDIO_PATH),
                 )
             )
             if audio_chunks:

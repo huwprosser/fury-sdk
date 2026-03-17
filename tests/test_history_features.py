@@ -1,6 +1,11 @@
 import asyncio
+import base64
+import sys
+import tempfile
+import types
+from pathlib import Path
 
-from fury import HistoryManager, StaticHistoryManager
+from fury import Agent, HistoryManager, StaticHistoryManager
 
 
 class FakeCompletion:
@@ -151,3 +156,48 @@ def test_static_history_manager_keeps_latest_messages_within_token_budget():
         {"role": "assistant", "content": "b" * 16},
         {"role": "user", "content": "c" * 16},
     ]
+
+
+def test_history_manager_add_image_appends_valid_user_message():
+    manager = HistoryManager(auto_compact=False)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        image_path = Path(tmpdir) / "sample.jpg"
+        image_path.write_bytes(b"fake-image")
+
+        history = asyncio.run(manager.add_image(str(image_path), text="Describe this"))
+
+    assert history[-1]["role"] == "user"
+    assert history[-1]["content"][0] == {"type": "text", "text": "Describe this"}
+    assert history[-1]["content"][1]["type"] == "image_url"
+    assert history[-1]["content"][1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+def test_history_manager_add_voice_requires_agent():
+    manager = HistoryManager(auto_compact=False)
+
+    try:
+        asyncio.run(manager.add_voice(base64.b64encode(b"fake").decode("utf-8")))
+    except ValueError as exc:
+        assert "requires an Agent instance" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError")
+
+
+def test_history_manager_add_voice_appends_transcribed_user_message(monkeypatch):
+    agent = Agent(model="test-model", system_prompt="You are helpful.")
+    manager = HistoryManager(agent=agent, auto_compact=False)
+
+    class FakeWhisper:
+        def transcribe(self, audio):
+            return [type("Seg", (), {"text": " hello "})()], None
+
+    monkeypatch.setattr(agent, "stt", FakeWhisper())
+
+    audio_module = types.ModuleType("fury.utils.audio")
+    audio_module.load_audio = lambda *_args, **_kwargs: (b"audio", 16000)
+    monkeypatch.setitem(sys.modules, "fury.utils.audio", audio_module)
+
+    history = asyncio.run(manager.add_voice(base64.b64encode(b"fake").decode("utf-8")))
+
+    assert history[-1] == {"role": "user", "content": "hello"}

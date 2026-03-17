@@ -3,10 +3,16 @@ Text-to-Speech example.
 """
 
 import wave
+from pathlib import Path
 
 import numpy as np
 
 from fury import Agent
+
+
+BASE_DIR = Path(__file__).resolve().parent
+REF_AUDIO_PATH = BASE_DIR / "resources" / "ref.wav"
+OUTPUT_PATH = BASE_DIR / "output.wav"
 
 
 def write_wav(path: str, audio: np.ndarray, sample_rate: int = 24000) -> None:
@@ -27,11 +33,11 @@ def main() -> None:
     audio_chunks = agent.speak(
         text="Welcome to Fury. The last Agent SDK you will ever need, sir.",
         ref_text="Welcome home sir.",
-        ref_audio_path="resources/ref.wav",
+        ref_audio_path=str(REF_AUDIO_PATH),
     )
 
     audio = np.concatenate(list(audio_chunks))
-    write_wav("output.wav", audio)
+    write_wav(str(OUTPUT_PATH), audio)
 
 
 if __name__ == "__main__":

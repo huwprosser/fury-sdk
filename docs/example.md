@@ -23,7 +23,8 @@ async def main() -> None:
     await history_manager.add({"role": "user", "content": "Summarize this long text..."})
 
     buffer = ""
-    async for event in agent.chat(history_manager.history, reasoning=False):
+    runner = agent.runner()
+    async for event in runner.chat(history_manager.history, reasoning=False):
         if event.content:
             buffer += event.content
             print(event.content, end="", flush=True)

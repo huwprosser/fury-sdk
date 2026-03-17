@@ -535,7 +535,8 @@ async def main():
 
         buffer = []
         last_stream_kind = None
-        async for event in agent.chat(history_manager.history, True):
+        runner = agent.runner()
+        async for event in runner.chat(history_manager.history, True):
             if event.tool_ui:
                 if last_stream_kind in {"chunk", "reasoning"}:
                     print()
