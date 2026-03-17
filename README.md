@@ -17,18 +17,11 @@ A flexible and powerful AI agent library for Python, designed to build agents wi
 
 ## Features
 
-- **Tool Support**: Define and register custom tools (functions) that the agent can execute.
-- **Parallel Tool Execution**: Built-in support for running multiple independent tools in parallel.
+- **Tool Support**: Define and register custom tools (functions) that the agent can execute and parallel tool execution support.
 - **Image and Voice inputs**: Support for image and voice inputs (using Whisper for STT).
 - **Text-to-Speech (TTS)**: Generate audio with NeuTTS via `Agent.speak()`.
-- **Streaming Responses**: Real-time streaming of agent responses and reasoning.
-- **History Managers**: Use `HistoryManager` for auto-compaction summaries or `StaticHistoryManager` for strict fixed-size context trimming.
-- **OpenAI-Compatible API Support**: Built on a lightweight `httpx` client that works with OpenAI-compatible providers like Llama.cpp, SGLang, OpenRouter, vLLM, and Ollama.
+- **History Management**: Use `HistoryManager` for auto-compaction support or `StaticHistoryManager` for strict fixed-size context trimming.
 
-## Roadmap
-
-- Message regeneration.
-- Context-targeting history compaction.
 
 ## Installation
 
@@ -38,96 +31,46 @@ Install with uv:
 uv add fury-sdk
 ```
 
-Install with pip:
-
-```bash
-pip install fury-sdk
-```
-
-### Examples
-
-If you also want example dependencies:
-
-```bash
-uv add "git+https://github.com/huwprosser/fury.git[examples]"
-```
-
-### TTS Extras
-
-Install the optional text-to-speech dependencies:
-
-```bash
-uv add "fury-sdk[tts]"
-```
-
-> Note: `phonemizer` requires the `espeak` system library. On macOS run `brew install espeak`,
-> and on Debian/Ubuntu run `sudo apt-get install espeak`.
-
-For local development in this repository:
-
-```bash
-uv sync --all-extras
-```
-
 ## Quick Start
-
-Most basic usage:
 
 ```python
 from fury import Agent
-
-agent = Agent(
-    model="your-model-name",  # e.g., "gpt-4o" or a local model
-    system_prompt="You are a helpful assistant.",
-    base_url="http://127.0.0.1:8080/v1",  # or https://openrouter.ai/api/v1, https://api.openai.com/v1
-    api_key="your-api-key",
-)
-
-response = agent.ask("Hello!", history=[])
-print(response)
-```R
-
-### Real Example
-
-Below is a basic chat loop with automatic history-compaction. This allows the bot to keep talking without loosing key facts beyond the context window. It happens automatically and can be configured to suit your models needs.
-
-```python
-import asyncio
-from fury import Agent, HistoryManager
-
 
 agent = Agent(
     model="unsloth/GLM-4.6V-Flash-GGUF:Q8_0",
     system_prompt="You are a helpful assistant.",
 )
 
-history_manager = HistoryManager(agent=agent)
-
-async def main() -> None:
-    while True:
-        user_input = input("> ")
-
-        await history_manager.add({"role": "user", "content": user_input})
-
-        buffer = ""
-
-        async for event in agent.chat(history_manager.history):
-            if event.content:
-                buffer += event.content
-                print(event.content, end="", flush=True)
-
-        await history_manager.add({"role": "assistant", "content": buffer})
-        print()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
+print(agent.ask("Hello!", history=[]))
 ```
 
-### Static Context Window Example
+Other examples:
+- [Basic Chat Loop](examples/chat.py)
+- [Coding Assistant](examples/coding-assistant)
+- [Voice Chat](examples/voice_chat.py)
+- [Text-to-speech](examples/tts.py)
 
-If you want no summarization and a hard history limit, use `StaticHistoryManager`:
+## History Management
+Fury makes managing history limits easy by providing simple, built-in history managers. They are just list managers that monitor context utilization and trim or compact your list accordingly.
+
+The standard `HistoryManager` will auto-compact your history as you add messages to it (summarise using an Agent) in a similar way to Claude Code, Codex and Pi.
+
+```python
+from fury import HistoryManager
+
+history_manager = HistoryManager(agent=agent)
+
+# Add something to history like this:
+await history_manager.add({"role": "user", "content": user_input})
+
+# Use the history like this:
+async for event in agent.chat(history_manager.history):
+    # ...
+```
+
+See [examples/chat.py](examples/chat.py) for a full working example.
+
+If you do not want auto-compaction and a hard history limit, use `StaticHistoryManager`:
 
 ```python
 from fury import StaticHistoryManager
@@ -139,7 +82,7 @@ history_manager = StaticHistoryManager(
 ```
 
 It keeps only the newest messages that fit in the target context length.
-See `docs/example.md` for a complete example.
+See [docs/example.md](docs/example.md) for a complete example.
 
 ### Configuration Options
 
@@ -262,6 +205,25 @@ Check out `examples/coding-assistant/coding_assistant.py` for a full-featured ex
 - **Skills System**: Loading specialized capabilities from `SKILL.md` files.
 - **Memory System**: Using `MEMORY.md` and `SOUL.md` for context.
 - **History Manager**: Uses `HistoryManager` to summarize long conversations and save context window.
+
+
+### TTS Extras
+Fury supports both text-to-speech (using NeuTTS Air/Nano) and speech-to-text (using Faster Whisper). 
+
+Install the optional text-to-speech dependencies:
+
+```bash
+uv add "fury-sdk[voice,tts]"
+```
+
+> Note: `phonemizer` requires the `espeak` system library. On macOS run `brew install espeak`,
+> and on Debian/Ubuntu run `sudo apt-get install espeak`.
+
+For local development in this repository:
+
+```bash
+uv sync --all-extras
+```
 
 ## Running Examples
 

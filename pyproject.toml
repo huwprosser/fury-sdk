@@ -12,7 +12,6 @@ dependencies = [
 
 [project.optional-dependencies]
 examples = [
-    "apscheduler",
     "pydantic",
     "python-dotenv",
 ]

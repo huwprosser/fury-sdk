@@ -1,24 +1,26 @@
+import asyncio
+import base64
+import inspect
 import io
 import json
 import logging
-import inspect
-import base64
 import mimetypes
-import asyncio
 import re
-from termcolor import cprint
-from .validation import validate_history
 from dataclasses import dataclass
 from typing import (
+    Any,
     AsyncGenerator,
     Callable,
     Dict,
     List,
-    Optional,
-    Any,
     Literal,
+    Optional,
 )
+
+from termcolor import cprint
+
 from .llm_client import ChatClientProtocol, create_chat_client
+from .validation import validate_history
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +122,7 @@ class Agent:
         max_tool_rounds: int = 50,
         parallel_tool_calls: bool = True,
         client_options: Optional[Dict[str, Any]] = None,
+        suppress_logs=False,
     ) -> None:
         """
         Initialize the Agent.
@@ -134,6 +137,7 @@ class Agent:
             max_tool_rounds: The maximum number of tool rounds allowed before giving up.
             parallel_tool_calls: Whether to allow parallel tool calls.
             client_options: Extra client constructor kwargs for the HTTP client.
+            suppress_logs: Prevent the Agent from logging to terminal on boot etc.
         """
         self.model = model
         self.system_prompt = system_prompt
@@ -178,7 +182,9 @@ class Agent:
             api_key=api_key,
             **(client_options or {}),
         )
-        self.show_yourself()
+
+        if suppress_logs:
+            self.show_yourself()
 
     def add_image_to_history(
         self, history: List[Dict[str, Any]], image_path: str
@@ -517,7 +523,9 @@ class Agent:
             return []
         return await asyncio.gather(*tasks)
 
-    def _prepare_active_history(self, history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _prepare_active_history(
+        self, history: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         """Copy history and ensure the system message exists when configured."""
         active_history = list(history)
         if self.system_prompt and not any(
@@ -558,7 +566,9 @@ class Agent:
             if not delta:
                 continue
 
-            self._append_tool_call_chunks(tool_calls, getattr(delta, "tool_calls", None))
+            self._append_tool_call_chunks(
+                tool_calls, getattr(delta, "tool_calls", None)
+            )
 
             reasoning_content = getattr(delta, "reasoning_content", None)
             if reasoning_content:
@@ -786,7 +796,9 @@ class Agent:
                 {"type": "text", "text": description},
                 {
                     "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{result['image_base64']}"},
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{result['image_base64']}"
+                    },
                 },
             ],
         }
