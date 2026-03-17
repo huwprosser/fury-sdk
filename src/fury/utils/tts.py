@@ -19,7 +19,7 @@ def speak_text(
 
     if agent.tts is None:
         try:
-            from .neutts_minimal import NeuTTSMinimal
+            from fury.neutts_minimal import NeuTTSMinimal
         except ModuleNotFoundError as exc:
             raise ModuleNotFoundError(
                 "TTS dependencies are not installed. "

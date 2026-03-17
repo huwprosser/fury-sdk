@@ -12,7 +12,7 @@ import re
 import warnings
 from typing import Generator, List, Optional
 
-from .utils.audio import load_audio
+from .audio import load_audio
 from phonemizer.backend import EspeakBackend
 from phonemizer.backend.espeak.wrapper import EspeakWrapper
 from neucodec import NeuCodec, NeuCodecOnnxDecoder

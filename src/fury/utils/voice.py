@@ -21,7 +21,7 @@ def add_voice_message_to_history(
         agent.stt = WhisperModel("base.en")
 
     try:
-        from .utils.audio import load_audio
+        from .audio import load_audio
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
             "Voice audio dependencies are not installed. Install fury-sdk[voice]."
