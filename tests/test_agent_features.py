@@ -7,9 +7,6 @@ import types
 import httpx
 import numpy as np
 import pytest
-
-from fury import Agent, create_tool
-
 from conftest import (
     FakeCompletion,
     FakeDelta,
@@ -18,6 +15,8 @@ from conftest import (
     SlowFakeCompletion,
     make_fake_client,
 )
+
+from fury import Agent, create_tool
 
 
 def collect_chat(agent, history, **kwargs):
@@ -71,7 +70,11 @@ def test_agent_preserves_system_prompt_when_calling_with_external_history():
 
 def test_agent_streams_plain_text_in_order():
     create = SequencedCreate(
-        [FakeCompletion([FakeDelta(content="A"), FakeDelta(content="B"), FakeDelta(content="C")])]
+        [
+            FakeCompletion(
+                [FakeDelta(content="A"), FakeDelta(content="B"), FakeDelta(content="C")]
+            )
+        ]
     )
     agent = Agent(model="test-model", system_prompt="You are helpful.")
     agent.client = make_fake_client(create)
@@ -204,7 +207,9 @@ def test_agent_executes_single_tool_and_returns_final_answer():
     assert any(
         event.tool_call and event.tool_call.result == {"result": 5} for event in events
     )
-    assert "".join(event.content for event in events if event.content) == "The sum is 5."
+    assert (
+        "".join(event.content for event in events if event.content) == "The sum is 5."
+    )
 
 
 def test_agent_streams_tool_ui_events_for_sync_tools_without_exposing_emit_in_schema():
@@ -336,12 +341,17 @@ def test_agent_streams_tool_ui_events_for_async_tools():
 
     events = collect_chat(agent, [{"role": "user", "content": "search"}])
 
-    assert [(event.tool_ui.id, event.tool_ui.title, event.tool_ui.type) for event in events if event.tool_ui] == [
+    assert [
+        (event.tool_ui.id, event.tool_ui.title, event.tool_ui.type)
+        for event in events
+        if event.tool_ui
+    ] == [
         ("phase-1", "Queued release notes", "other"),
         ("phase-2", "Fetched release notes", "tool_call"),
     ]
     assert any(
-        event.tool_call and event.tool_call.result == {"status": "done"} for event in events
+        event.tool_call and event.tool_call.result == {"status": "done"}
+        for event in events
     )
 
 
@@ -390,7 +400,8 @@ def test_agent_filters_hallucinated_tool_arguments():
 
     assert observed == {"text": "hi"}
     assert any(
-        event.tool_call and event.tool_call.arguments == {"text": "hi"} for event in events
+        event.tool_call and event.tool_call.arguments == {"text": "hi"}
+        for event in events
     )
 
 
@@ -417,7 +428,9 @@ def test_agent_surfaces_tool_execution_errors_without_crashing_conversation():
                 [
                     FakeDelta(
                         tool_calls=[
-                            FakeToolCallChunk(0, id="call_1", name="explode", arguments="{}")
+                            FakeToolCallChunk(
+                                0, id="call_1", name="explode", arguments="{}"
+                            )
                         ]
                     )
                 ]
@@ -515,11 +528,17 @@ def test_agent_executes_parallel_tool_wrapper_for_independent_tools():
 
     events = collect_chat(agent, [{"role": "user", "content": "run both"}])
 
-    result_events = [event.tool_call.result for event in events if event.tool_call and event.tool_call.result is not None]
-    assert result_events == [[
-        {"recipient_name": "one", "result": 1},
-        {"recipient_name": "two", "result": 2},
-    ]]
+    result_events = [
+        event.tool_call.result
+        for event in events
+        if event.tool_call and event.tool_call.result is not None
+    ]
+    assert result_events == [
+        [
+            {"recipient_name": "one", "result": 1},
+            {"recipient_name": "two", "result": 2},
+        ]
+    ]
 
 
 def test_chat_cancel_discards_partial_response_and_closes_stream():
@@ -739,9 +758,11 @@ def test_parallel_tool_wrapper_forwards_tool_ui_events_from_nested_tools():
 
     events = collect_chat(agent, [{"role": "user", "content": "run one"}])
 
-    assert [(event.tool_ui.id, event.tool_ui.title, event.tool_ui.type) for event in events if event.tool_ui] == [
-        ("one", "Running one", "tool_call")
-    ]
+    assert [
+        (event.tool_ui.id, event.tool_ui.title, event.tool_ui.type)
+        for event in events
+        if event.tool_ui
+    ] == [("one", "Running one", "tool_call")]
 
 
 def test_agent_rejects_nested_parallel_tool_calls():
@@ -791,7 +812,9 @@ def test_agent_accepts_image_result_from_tool_and_appends_multimodal_followup_me
                 [
                     FakeDelta(
                         tool_calls=[
-                            FakeToolCallChunk(0, id="call_1", name="camera", arguments="{}")
+                            FakeToolCallChunk(
+                                0, id="call_1", name="camera", arguments="{}"
+                            )
                         ]
                     )
                 ]
@@ -804,7 +827,10 @@ def test_agent_accepts_image_result_from_tool_and_appends_multimodal_followup_me
 
     events = collect_chat(agent, [{"role": "user", "content": "look"}])
 
-    assert "".join(event.content for event in events if event.content) == "I can see the image."
+    assert (
+        "".join(event.content for event in events if event.content)
+        == "I can see the image."
+    )
 
 
 def test_agent_transcribes_voice_message_and_appends_user_text(monkeypatch):
@@ -851,7 +877,7 @@ def test_agent_speak_initializes_tts_backend_once_and_reuses_it(monkeypatch):
             calls.append(("infer", text, ref_audio_path, ref_text))
             return iter([np.array([0.1, 0.2], dtype=np.float32)])
 
-    module = types.ModuleType("fury.neutts_minimal")
+    module = types.ModuleType("fury.utils.neutts_minimal")
     module.NeuTTSMinimal = FakeNeuTTSMinimal
     monkeypatch.setitem(sys.modules, "fury.neutts_minimal", module)
 
