@@ -122,11 +122,13 @@ class Agent:
         history: List[Dict[str, Any]],
         reasoning: bool = False,
         prune_unfinished_sentences: bool = False,
+        model: Optional[str] = None,
     ) -> AsyncGenerator[ChatStreamEvent, None]:
         async for event in self._runner.chat(
             history=history,
             reasoning=reasoning,
             prune_unfinished_sentences=prune_unfinished_sentences,
+            model=model,
         ):
             yield event
 
@@ -136,12 +138,14 @@ class Agent:
         history: Optional[List[Dict[str, Any]]] = None,
         reasoning: bool = False,
         prune_unfinished_sentences: bool = False,
+        model: Optional[str] = None,
     ) -> str:
         return await self._runner.ask_async(
             user_input=user_input,
             history=history,
             reasoning=reasoning,
             prune_unfinished_sentences=prune_unfinished_sentences,
+            model=model,
         )
 
     def ask(
@@ -150,6 +154,7 @@ class Agent:
         history: Optional[List[Dict[str, Any]]] = None,
         reasoning: bool = False,
         prune_unfinished_sentences: bool = False,
+        model: Optional[str] = None,
     ) -> str:
         try:
             loop = asyncio.get_running_loop()
@@ -168,6 +173,7 @@ class Agent:
                 history=history,
                 reasoning=reasoning,
                 prune_unfinished_sentences=prune_unfinished_sentences,
+                model=model,
             )
         )
 
@@ -203,11 +209,13 @@ class Runner:
         history: List[Dict[str, Any]],
         reasoning: bool = False,
         prune_unfinished_sentences: bool = False,
+        model: Optional[str] = None,
     ) -> AsyncGenerator[ChatStreamEvent, None]:
         async for event in self._agent._runner.chat(
             history=history,
             reasoning=reasoning,
             prune_unfinished_sentences=prune_unfinished_sentences,
+            model=model,
             control=self._control,
         ):
             yield event

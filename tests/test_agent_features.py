@@ -88,6 +88,31 @@ def test_agent_streams_plain_text_in_order():
     assert "".join(event.content for event in events if event.content) == "ABC"
 
 
+def test_agent_chat_allows_per_request_model_override():
+    create = SequencedCreate([FakeCompletion([FakeDelta(content="ok")])])
+    agent = Agent(model="default-model", system_prompt="You are helpful.")
+    agent.client = make_fake_client(create)
+
+    collect_chat(
+        agent,
+        [{"role": "user", "content": "stream text"}],
+        model="override-model",
+    )
+
+    assert create.calls[0]["model"] == "override-model"
+
+
+def test_agent_ask_allows_per_request_model_override():
+    create = SequencedCreate([FakeCompletion([FakeDelta(content="ok")])])
+    agent = Agent(model="default-model", system_prompt="You are helpful.")
+    agent.client = make_fake_client(create)
+
+    response = agent.ask("Say hello.", history=[], model="override-model")
+
+    assert response == "ok"
+    assert create.calls[0]["model"] == "override-model"
+
+
 def test_agent_streams_reasoning_only_when_enabled():
     async def create(**kwargs):
         if "extra_body" in kwargs:
@@ -113,6 +138,27 @@ def test_agent_streams_reasoning_only_when_enabled():
     assert [event.reasoning for event in disabled if event.reasoning] == []
     assert [event.reasoning for event in enabled if event.reasoning] == ["thinking"]
     assert "".join(event.content for event in enabled if event.content) == "answer"
+
+
+def test_runner_chat_allows_per_request_model_override():
+    create = SequencedCreate([FakeCompletion([FakeDelta(content="ok")])])
+    agent = Agent(model="default-model", system_prompt="You are helpful.")
+    agent.client = make_fake_client(create)
+
+    async def run():
+        runner = agent.runner()
+        events = []
+        async for event in runner.chat(
+            [{"role": "user", "content": "stream text"}],
+            model="override-model",
+        ):
+            events.append(event)
+        return events
+
+    events = asyncio.run(run())
+
+    assert "".join(event.content for event in events if event.content) == "ok"
+    assert create.calls[0]["model"] == "override-model"
 
 
 def test_agent_prunes_unfinished_streamed_sentences_when_requested():

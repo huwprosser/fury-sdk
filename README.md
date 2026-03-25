@@ -42,6 +42,7 @@ agent = Agent(
 )
 
 print(agent.ask("Hello!", history=[]))
+print(agent.ask("Hello!", history=[], model="another-model"))
 ```
 
 Other examples:

@@ -161,7 +161,6 @@ def _build_chat_completion_kwargs(
     generation_params: Dict[str, Any],
 ) -> Dict[str, Any]:
     kwargs: Dict[str, Any] = {
-        "model": model,
         "messages": active_history,
         "stream": True,
     }
@@ -171,6 +170,7 @@ def _build_chat_completion_kwargs(
         kwargs["tools"] = tools
     if generation_params:
         kwargs.update(generation_params)
+    kwargs["model"] = model
     return kwargs
 
 
@@ -234,6 +234,7 @@ class GenerationRunner:
         history: List[Dict[str, Any]],
         reasoning: bool = False,
         prune_unfinished_sentences: bool = False,
+        model: Optional[str] = None,
         control: Optional[RunnerControl] = None,
     ) -> AsyncGenerator[ChatStreamEvent, None]:
         validate_history(history)
@@ -248,7 +249,7 @@ class GenerationRunner:
 
                 tool_calls: List[Dict[str, Any]] = []
                 kwargs = _build_chat_completion_kwargs(
-                    model=self.runtime.model,
+                    model=model if model is not None else self.runtime.model,
                     active_history=active_history,
                     reasoning=reasoning,
                     tools=self.tool_registry.tools,
@@ -313,6 +314,7 @@ class GenerationRunner:
         history: Optional[List[Dict[str, Any]]] = None,
         reasoning: bool = False,
         prune_unfinished_sentences: bool = False,
+        model: Optional[str] = None,
     ) -> str:
         active_history = history if history is not None else []
         active_history.append({"role": "user", "content": user_input})
@@ -324,6 +326,7 @@ class GenerationRunner:
             active_history,
             reasoning=reasoning,
             prune_unfinished_sentences=prune_unfinished_sentences,
+            model=model,
         ):
             if event.content:
                 buffer.append(event.content)

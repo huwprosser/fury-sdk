@@ -23,7 +23,7 @@ agent = Agent(
     api_key="your-api-key",
 )
 
-response = agent.ask("Hello!", history=[])
+response = agent.ask("Hello!", history=[], model="override-model")
 print(response)
 ```
 
@@ -41,7 +41,7 @@ agent = Agent(
 async def main():
     history = [{"role": "user", "content": "Hello"}]
     runner = agent.runner()
-    async for event in runner.chat(history, reasoning=False):
+    async for event in runner.chat(history, reasoning=False, model="override-model"):
         if event.content:
             print(event.content, end="", flush=True)
 
@@ -141,6 +141,8 @@ Stream consumers receive these as `ChatStreamEvent(tool_ui=...)`, separate from 
 ## History Management
 
 `Agent` does not automatically manage history. Pass a list of `{role, content}` messages into `chat()` or `ask()`. For auto-compaction, use `HistoryManager` (see `docs/history_manager.md`).
+
+You can override the configured agent model per request by passing `model="..."` to `Agent.chat()`, `Agent.ask()`, `Agent.ask_async()`, or `Runner.chat()`.
 
 ## Multimodal Helpers
 
