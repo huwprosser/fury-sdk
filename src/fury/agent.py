@@ -112,6 +112,7 @@ class Agent:
             str(memory_scope).strip() if memory_scope is not None else None
         )
         self.memory_store = memory_store
+        self.suppress_logs = suppress_logs
 
         if self.memory_scope == "":
             raise ValueError("memory_scope must be a non-empty string")

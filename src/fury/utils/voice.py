@@ -27,7 +27,8 @@ def prewarm_transcription_model(agent: Any) -> bool:
         return True
 
     try:
-        print("Warming up STT...")
+        if not agent.suppress_logs:
+            print("Warming up STT...")
         agent.stt = _create_transcription_model()
     except ModuleNotFoundError:
         return False

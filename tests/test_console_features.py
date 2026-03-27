@@ -36,7 +36,9 @@ def test_history_manager_prewarm_suppresses_transcription_load_output(
     faster_whisper_module.WhisperModel = FakeWhisperModel
     monkeypatch.setitem(sys.modules, "faster_whisper", faster_whisper_module)
 
-    agent = Agent(model="test-model", system_prompt="You are helpful.")
+    agent = Agent(
+        model="test-model", system_prompt="You are helpful.", suppress_logs=True
+    )
 
     HistoryManager(agent=agent, auto_compact=False)
     captured = capfd.readouterr()
@@ -59,7 +61,9 @@ def test_agent_speak_suppresses_tts_load_output(monkeypatch, capfd):
     monkeypatch.delitem(sys.modules, "fury.neutts_minimal", raising=False)
     monkeypatch.setitem(sys.modules, "fury.utils.neutts_minimal", neutts_module)
 
-    agent = Agent(model="test-model", system_prompt="You are helpful.")
+    agent = Agent(
+        model="test-model", system_prompt="You are helpful.", suppress_logs=True
+    )
 
     list(agent.speak(text="hello", ref_text="ref", ref_audio_path="ref.wav"))
     captured = capfd.readouterr()
@@ -85,7 +89,9 @@ def test_agent_speak_suppresses_reference_audio_prewarm_output(monkeypatch, capf
     monkeypatch.delitem(sys.modules, "fury.neutts_minimal", raising=False)
     monkeypatch.setitem(sys.modules, "fury.utils.neutts_minimal", neutts_module)
 
-    agent = Agent(model="test-model", system_prompt="You are helpful.")
+    agent = Agent(
+        model="test-model", system_prompt="You are helpful.", suppress_logs=True
+    )
 
     list(agent.speak(text="hello", ref_text="ref", ref_audio_path="ref.wav"))
     captured = capfd.readouterr()

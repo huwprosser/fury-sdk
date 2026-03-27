@@ -38,6 +38,8 @@ def prewarm_text_to_speech(
     backbone_path: str = "neuphonic/neutts-nano-q4-gguf",
     codec_path: str = "neuphonic/neucodec-onnx-decoder",
 ) -> Any:
+    if not agent.suppress_logs:
+        print("Warming up TTS...")
     if agent.tts is None:
         agent.tts = _create_text_to_speech_model(
             backbone_path=backbone_path,
