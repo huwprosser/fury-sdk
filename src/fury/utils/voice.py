@@ -2,7 +2,43 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 from typing import Any, Dict, List
+
+from .console import silence_console_output
+
+logger = logging.getLogger(__name__)
+
+
+def _create_transcription_model() -> Any:
+    try:
+        from faster_whisper import WhisperModel
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "STT dependencies are not installed. Install fury-sdk[voice]."
+        ) from exc
+
+    with silence_console_output():
+        return WhisperModel("base.en")
+
+
+def prewarm_transcription_model(agent: Any) -> bool:
+    if getattr(agent, "stt", None) is not None:
+        return True
+
+    try:
+        print("Warming up STT...")
+        agent.stt = _create_transcription_model()
+    except ModuleNotFoundError:
+        return False
+    except Exception:
+        logger.warning(
+            "Failed to prewarm the transcription model; voice input will retry lazily.",
+            exc_info=True,
+        )
+        return False
+
+    return True
 
 
 def add_voice_message_to_history(
@@ -10,15 +46,8 @@ def add_voice_message_to_history(
     base64_audio_bytes: str,
     agent: Any,
 ) -> List[Dict[str, Any]]:
-    if not agent.stt:
-        try:
-            from faster_whisper import WhisperModel
-        except ModuleNotFoundError as exc:
-            raise ModuleNotFoundError(
-                "STT dependencies are not installed. Install fury-sdk[voice]."
-            ) from exc
-
-        agent.stt = WhisperModel("base.en")
+    if getattr(agent, "stt", None) is None:
+        agent.stt = _create_transcription_model()
 
     try:
         from .audio import load_audio

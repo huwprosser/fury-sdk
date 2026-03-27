@@ -13,6 +13,7 @@ import warnings
 from typing import Generator, List, Optional
 
 from .audio import load_audio
+from .console import silence_console_output
 from phonemizer.backend import EspeakBackend
 from phonemizer.backend.espeak.wrapper import EspeakWrapper
 from neucodec import NeuCodec, NeuCodecOnnxDecoder
@@ -20,6 +21,7 @@ from llama_cpp import Llama
 from llama_cpp._logger import logger as llama_logger
 
 warnings.filterwarnings("ignore")
+logger = logging.getLogger(__name__)
 
 
 def _configure_espeak_library():
@@ -110,15 +112,18 @@ class NeuTTSMinimal:
         )
         self._ref_codes: Optional[torch.Tensor] = None
         self._ref_audio_path: Optional[str] = None
+        self._reference_codec: Optional[NeuCodec] = None
+        self._reference_codec_id: Optional[str] = None
+        self._reference_codec_device: Optional[str] = None
 
-        print("Loading phonemizer...")
+        logger.debug("Loading phonemizer.")
         self.phonemizer = EspeakBackend(
             language="en-us", preserve_punctuation=True, with_stress=True
         )
 
         llama_logger.setLevel(logging.DEBUG if verbose else logging.CRITICAL + 1)
 
-        print(f"Loading backbone from {backbone_path}...")
+        logger.debug("Loading backbone from %s.", backbone_path)
         self.backbone = self._load_backbone(
             backbone_path=backbone_path,
             backbone_filename=backbone_filename,
@@ -126,7 +131,7 @@ class NeuTTSMinimal:
             n_batch=n_batch,
         )
 
-        print(f"Loading codec from {codec_path}...")
+        logger.debug("Loading codec from %s.", codec_path)
         self.codec = self._load_codec(codec_path)
 
     def _load_backbone(
@@ -168,6 +173,46 @@ class NeuTTSMinimal:
         return phones
 
     @staticmethod
+    def _encode_reference_audio_with_codec(
+        codec: NeuCodec,
+        ref_audio_path: str,
+        *,
+        sample_rate: int,
+        device: str,
+    ) -> torch.Tensor:
+        wav, _ = load_audio(ref_audio_path, sr=sample_rate, mono=True)
+        wav_tensor = torch.from_numpy(wav).float().unsqueeze(0).unsqueeze(0).to(device)
+
+        with torch.no_grad():
+            ref_codes = (
+                codec.encode_code(audio_or_path=wav_tensor).squeeze(0).squeeze(0)
+            )
+
+        return ref_codes.detach().cpu()
+
+    def _get_reference_codec(
+        self,
+        *,
+        codec_id: str = "neuphonic/neucodec",
+        device: str = "cpu",
+    ) -> NeuCodec:
+        if (
+            self._reference_codec is not None
+            and self._reference_codec_id == codec_id
+            and self._reference_codec_device == device
+        ):
+            return self._reference_codec
+
+        with silence_console_output():
+            codec = NeuCodec.from_pretrained(codec_id)
+            codec.eval().to(device)
+
+        self._reference_codec = codec
+        self._reference_codec_id = codec_id
+        self._reference_codec_device = device
+        return codec
+
+    @staticmethod
     def encode_reference_audio(
         ref_audio_path: str,
         *,
@@ -177,18 +222,15 @@ class NeuTTSMinimal:
         device: str = "cpu",
     ) -> torch.Tensor:
         """Encode a reference audio file into NeuCodec speech token IDs."""
-        codec = NeuCodec.from_pretrained(codec_id)
-        codec.eval().to(device)
-
-        wav, _ = load_audio(ref_audio_path, sr=sample_rate, mono=True)
-        wav_tensor = torch.from_numpy(wav).float().unsqueeze(0).unsqueeze(0).to(device)
-
-        with torch.no_grad():
-            ref_codes = (
-                codec.encode_code(audio_or_path=wav_tensor).squeeze(0).squeeze(0)
+        with silence_console_output():
+            codec = NeuCodec.from_pretrained(codec_id)
+            codec.eval().to(device)
+            ref_codes = NeuTTSMinimal._encode_reference_audio_with_codec(
+                codec,
+                ref_audio_path,
+                sample_rate=sample_rate,
+                device=device,
             )
-
-        ref_codes = ref_codes.detach().cpu()
 
         if output_path:
             if not output_path.endswith(".pt"):
@@ -196,6 +238,28 @@ class NeuTTSMinimal:
             torch.save(ref_codes, output_path)
 
         return ref_codes
+
+    def prepare_reference_audio(
+        self,
+        ref_audio_path: str,
+        *,
+        sample_rate: int = 16000,
+        codec_id: str = "neuphonic/neucodec",
+        device: str = "cpu",
+    ) -> torch.Tensor:
+        if self._ref_codes is not None and self._ref_audio_path == ref_audio_path:
+            return self._ref_codes
+
+        codec = self._get_reference_codec(codec_id=codec_id, device=device)
+        with silence_console_output():
+            self._ref_codes = self._encode_reference_audio_with_codec(
+                codec,
+                ref_audio_path,
+                sample_rate=sample_rate,
+                device=device,
+            )
+        self._ref_audio_path = ref_audio_path
+        return self._ref_codes
 
     def _decode_ids(self, speech_ids: List[int]) -> np.ndarray:
         """Decode directly from integer speech token IDs (no string/regex overhead)."""
@@ -212,10 +276,7 @@ class NeuTTSMinimal:
         ref_audio_path: str,
         ref_text: str,
     ) -> Generator[np.ndarray, None, None]:
-
-        if self._ref_codes is None or self._ref_audio_path != ref_audio_path:
-            self._ref_codes = self.encode_reference_audio(ref_audio_path)
-            self._ref_audio_path = ref_audio_path
+        self.prepare_reference_audio(ref_audio_path)
 
         # Preprocessing
         ref_phones = self._to_phones(ref_text)

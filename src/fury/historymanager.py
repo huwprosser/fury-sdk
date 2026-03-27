@@ -8,7 +8,7 @@ from .utils.history_summary import (
     find_history_cut_index,
 )
 from .utils.validation import validate_message
-from .utils.voice import add_voice_message_to_history
+from .utils.voice import add_voice_message_to_history, prewarm_transcription_model
 
 DEFAULT_SUMMARY_SYSTEM_PROMPT = (
     "Summarize the conversation for future context using this format:\n"
@@ -68,6 +68,7 @@ class HistoryManager:
         if agent is not None:
             client = client or agent.client
             summary_model = summary_model or agent.model
+            prewarm_transcription_model(agent)
 
         self.client = client
         self.summary_model = summary_model

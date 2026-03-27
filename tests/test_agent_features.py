@@ -917,30 +917,33 @@ def test_agent_speak_raises_when_reference_audio_or_text_missing():
         agent.speak(text="hello", ref_text="", ref_audio_path="ref.wav")
 
 
-def test_agent_speak_initializes_tts_backend_once_and_reuses_it(monkeypatch):
-    calls = []
-
+def test_agent_speak_prewarms_reference_audio_before_iteration(monkeypatch):
     class FakeNeuTTSMinimal:
-        def __init__(self, backbone_path, codec_path):
-            calls.append(("init", backbone_path, codec_path))
+        def __init__(self, **_kwargs):
+            self.prepared = []
+            self.infer_started = False
 
-        def infer_stream(self, text, ref_audio_path, ref_text):
-            calls.append(("infer", text, ref_audio_path, ref_text))
-            return iter([np.array([0.1, 0.2], dtype=np.float32)])
+        def prepare_reference_audio(self, ref_audio_path):
+            self.prepared.append(ref_audio_path)
 
-    module = types.ModuleType("fury.utils.neutts_minimal")
-    module.NeuTTSMinimal = FakeNeuTTSMinimal
-    monkeypatch.setitem(sys.modules, "fury.neutts_minimal", module)
+        def infer_stream(self, **_kwargs):
+            def stream():
+                self.infer_started = True
+                if False:
+                    yield None
+
+            return stream()
+
+    neutts_module = types.ModuleType("fury.utils.neutts_minimal")
+    neutts_module.NeuTTSMinimal = FakeNeuTTSMinimal
+    monkeypatch.delitem(sys.modules, "fury.neutts_minimal", raising=False)
+    monkeypatch.setitem(sys.modules, "fury.utils.neutts_minimal", neutts_module)
 
     agent = Agent(model="test-model", system_prompt="You are helpful.")
 
-    first = list(agent.speak(text="one", ref_text="ref", ref_audio_path="ref.wav"))
-    second = list(agent.speak(text="two", ref_text="ref", ref_audio_path="ref.wav"))
+    stream = agent.speak(text="hello", ref_text="ref", ref_audio_path="ref.wav")
 
-    assert len([call for call in calls if call[0] == "init"]) == 1
-    assert [call for call in calls if call[0] == "infer"] == [
-        ("infer", "one", "ref.wav", "ref"),
-        ("infer", "two", "ref.wav", "ref"),
-    ]
-    assert len(first) == 1
-    assert len(second) == 1
+    assert agent.tts.prepared == ["ref.wav"]
+    assert agent.tts.infer_started is False
+    assert list(stream) == []
+    assert agent.tts.infer_started is True

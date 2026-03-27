@@ -53,6 +53,7 @@ async def main() -> None:
     )
 
     # Warmup tts
+    print("Warming up TTS...")
     agent.speak(
         text=".",
         ref_text=REF_TEXT,

@@ -184,6 +184,43 @@ def test_history_manager_add_voice_requires_agent():
         raise AssertionError("Expected ValueError")
 
 
+def test_history_manager_prewarms_voice_model_when_available(monkeypatch):
+    init_calls = []
+
+    class FakeWhisperModel:
+        pass
+
+    faster_whisper_module = types.ModuleType("faster_whisper")
+    faster_whisper_module.WhisperModel = (
+        lambda name: init_calls.append(name) or FakeWhisperModel()
+    )
+    monkeypatch.setitem(sys.modules, "faster_whisper", faster_whisper_module)
+
+    agent = Agent(model="test-model", system_prompt="You are helpful.")
+
+    assert agent.stt is None
+
+    HistoryManager(agent=agent, auto_compact=False)
+
+    assert isinstance(agent.stt, FakeWhisperModel)
+    assert init_calls == ["base.en"]
+
+
+def test_history_manager_ignores_transcription_prewarm_failures(monkeypatch):
+    faster_whisper_module = types.ModuleType("faster_whisper")
+    faster_whisper_module.WhisperModel = lambda _name: (_ for _ in ()).throw(
+        RuntimeError("boom")
+    )
+    monkeypatch.setitem(sys.modules, "faster_whisper", faster_whisper_module)
+
+    agent = Agent(model="test-model", system_prompt="You are helpful.")
+
+    manager = HistoryManager(agent=agent, auto_compact=False)
+
+    assert manager.agent is agent
+    assert agent.stt is None
+
+
 def test_history_manager_add_voice_appends_transcribed_user_message(monkeypatch):
     agent = Agent(model="test-model", system_prompt="You are helpful.")
     manager = HistoryManager(agent=agent, auto_compact=False)
