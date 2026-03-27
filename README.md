@@ -21,6 +21,7 @@ A flexible and powerful AI agent library for Python, designed to build agents wi
 - **Image and Voice inputs**: Support for image and voice inputs (using Whisper for STT).
 - **Text-to-Speech (TTS)**: Generate audio with NeuTTS via `Agent.speak()`.
 - **History Management**: Use `HistoryManager` for auto-compaction support or `StaticHistoryManager` for strict fixed-size context trimming.
+- **Durable Memory**: Persist named memory scopes, bind them to individual agents, and expose an airgapped memory tool.
 
 
 ## Installation
@@ -47,6 +48,7 @@ print(agent.ask("Hello!", history=[], model="another-model"))
 
 Other examples:
 - [Basic Chat Loop](examples/chat.py)
+- [Chat With Durable Memory](examples/memory_chat.py)
 - [Interruption](examples/interruption.py)
 - [Coding Assistant](examples/coding-assistant)
 - [Voice Chat](examples/voice_chat.py)
@@ -86,6 +88,48 @@ history_manager = StaticHistoryManager(
 
 It keeps only the newest messages that fit in the target context length.
 See [docs/example.md](docs/example.md) for a complete example.
+
+## Durable Memory
+
+Fury can persist durable memory outside the current chat history using explicit named scopes. Pass `memory_scope` when constructing an agent and Fury will:
+
+- create or reuse a `MemoryStore`
+- inject the latest memory snapshot for that scope into the system prompt
+- register a `memory` tool bound only to that scope
+
+```python
+from fury import Agent
+
+agent = Agent(
+    model="your-model-name",
+    system_prompt="You are a helpful assistant.",
+    memory_scope="my-project",
+)
+```
+
+To share one backing store across multiple airgapped agents:
+
+```python
+from fury import Agent, MemoryStore
+
+store = MemoryStore(".fury/memory")
+
+alpha = Agent(
+    model="your-model-name",
+    system_prompt="You help project alpha.",
+    memory_store=store,
+    memory_scope="project-alpha",
+)
+
+beta = Agent(
+    model="your-model-name",
+    system_prompt="You help project beta.",
+    memory_store=store,
+    memory_scope="project-beta",
+)
+```
+
+See [docs/memory.md](docs/memory.md) for the full API.
 
 ### Configuration Options
 
@@ -162,7 +206,7 @@ Check out [examples/coding-assistant/coding_assistant.py](examples/coding-assist
 
 - **Tools**: File system operations (`read`, `write`, `edit`, `bash`).
 - **Skills System**: Loading specialized capabilities from `SKILL.md` files.
-- **Memory System**: Using `MEMORY.md` and `SOUL.md` for context.
+- **Memory System**: Using durable memory plus `SOUL.md` for project context.
 - **History Manager**: Uses `HistoryManager` to summarize long conversations and save context window.
 
 Build something neat.

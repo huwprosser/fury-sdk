@@ -15,6 +15,12 @@ uv add "git+https://github.com/huwprosser/fury.git[examples]"
 uv run examples/chat.py
 ```
 
+**Chat With Durable Memory:**
+
+```bash
+uv run examples/memory_chat.py
+```
+
 **Interrupting A Stream With A Hotkey:**
 
 ```bash
@@ -49,6 +55,7 @@ uv run examples/voice_chat.py
     - `types.py`: Public event and tool types.
 - `examples/`: Usage examples.
     - `chat.py`: Basic chat loop.
+    - `memory_chat.py`: Chat loop with a named durable-memory scope and a scoped memory tool.
     - `interruption.py`: Chat loop with a hotkey that interrupts a streamed reply and keeps the partial output in history.
     - `tts.py`: NeuTTS example.
     - `voice_chat.py`: Voice chat with Whisper + NeuTTS.

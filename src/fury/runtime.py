@@ -64,6 +64,13 @@ class GenerationRuntime(Protocol):
     client: Any
 
 
+def _resolve_system_prompt(runtime: GenerationRuntime) -> str:
+    build_system_prompt = getattr(runtime, "build_system_prompt", None)
+    if callable(build_system_prompt):
+        return build_system_prompt()
+    return runtime.system_prompt
+
+
 class GenerationSession:
     def __init__(self, control: Optional[RunnerControl]) -> None:
         self.handle = control
@@ -242,7 +249,10 @@ class GenerationRunner:
         session = GenerationSession(control)
 
         try:
-            active_history = _prepare_active_history(history, self.runtime.system_prompt)
+            active_history = _prepare_active_history(
+                history,
+                _resolve_system_prompt(self.runtime),
+            )
             for _ in range(self.runtime.max_tool_rounds):
                 if session.stop_requested:
                     break

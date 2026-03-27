@@ -16,7 +16,7 @@ from conftest import (
     make_fake_client,
 )
 
-from fury import Agent, create_tool
+from fury import Agent, HistoryManager, create_tool
 
 
 def collect_chat(agent, history, **kwargs):
@@ -567,7 +567,9 @@ def test_agent_executes_parallel_tool_wrapper_for_independent_tools():
             FakeCompletion([FakeDelta(content="Parallel complete")]),
         ]
     )
-    agent = Agent(model="test-model", system_prompt="You are helpful.")
+    agent = Agent(
+        model="test-model", system_prompt="You are helpful.", parallel_tool_calls=True
+    )
     agent.available_functions["one"] = one
     agent.available_functions["two"] = two
     agent.client = make_fake_client(create)
@@ -798,7 +800,9 @@ def test_parallel_tool_wrapper_forwards_tool_ui_events_from_nested_tools():
             FakeCompletion([FakeDelta(content="Parallel complete")]),
         ]
     )
-    agent = Agent(model="test-model", system_prompt="You are helpful.")
+    agent = Agent(
+        model="test-model", system_prompt="You are helpful.", parallel_tool_calls=True
+    )
     agent.available_functions["one"] = one
     agent.client = make_fake_client(create)
 
@@ -897,7 +901,8 @@ def test_agent_transcribes_voice_message_and_appends_user_text(monkeypatch):
 
     agent = Agent(model="test-model", system_prompt="You are helpful.")
 
-    history = agent.add_voice_message_to_history([], "ZmFrZQ==")
+    history_manager = HistoryManager(agent=agent, auto_compact=False)
+    history = asyncio.run(history_manager.add_voice("ZmFrZQ=="))
 
     assert history == [{"role": "user", "content": "transcribed text"}]
 

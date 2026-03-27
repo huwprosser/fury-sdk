@@ -6,7 +6,12 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from termcolor import cprint
 
-from .multimodal import add_image_to_history
+from .memory import (
+    MemorySnapshot,
+    MemoryStore,
+    compose_prompt_with_memory,
+    create_memory_tool,
+)
 from .runtime import GenerationRunner, RunnerControl
 from .tools import ToolExecutor, ToolRegistry
 from .transport import AsyncOpenAICompatibleClient
@@ -16,16 +21,35 @@ from .types import (
     ToolCallEvent,
     ToolResult,
     ToolUiEvent,
-    create_tool,
 )
 from .utils.tts import speak_text
-from .utils.voice import add_voice_message_to_history
 
 logger = logging.getLogger(__name__)
 
 
+def _get_registered_tool_name(tool: Any) -> Optional[str]:
+    if isinstance(tool, Tool):
+        return tool.name
+    if isinstance(tool, dict):
+        function = tool.get("function")
+        if isinstance(function, dict):
+            name = function.get("name")
+            if isinstance(name, str):
+                return name
+    return None
+
+
 class Agent:
+    """Chat agent with optional tools, multimodal helpers, and durable memory.
+
+    Pass ``memory_scope`` to opt into Fury's named durable-memory system.
+    When enabled, the agent automatically injects that scope's memory snapshot
+    into the system prompt on each turn and registers the built-in ``memory``
+    tool unless disabled.
+    """
+
     model: str
+    base_system_prompt: str
     system_prompt: str
     max_tool_rounds: int
     stt: Optional[Any]
@@ -37,21 +61,46 @@ class Agent:
     generation_params: Dict[str, Any]
     parallel_tool_calls: bool
     client: AsyncOpenAICompatibleClient
+    memory_store: Optional[MemoryStore]
+    memory_scope: Optional[str]
 
     def __init__(
         self,
         model: str,
         system_prompt: str,
         tools: Optional[List[Tool]] = None,
+        memory_scope: Optional[str] = None,
+        memory_store: Optional[MemoryStore] = None,
+        enable_memory_tool: bool = True,
+        memory_tool_name: str = "memory",
         base_url: str = "http://127.0.0.1:8080/v1",
         api_key: str = "",
         generation_params: Optional[Dict[str, Any]] = None,
-        max_tool_rounds: int = 50,
-        parallel_tool_calls: bool = True,
+        max_tool_rounds: int = 200,
+        parallel_tool_calls: bool = False,
         client_options: Optional[Dict[str, Any]] = None,
         suppress_logs: bool = False,
     ) -> None:
+        """Initialize an agent.
+
+        Args:
+            model: Model name sent to the OpenAI-compatible backend.
+            system_prompt: Base system instruction string.
+            tools: Optional list of tools created with ``create_tool()``.
+            memory_scope: Optional durable-memory namespace for this agent.
+            memory_store: Optional store to reuse across multiple agents.
+            enable_memory_tool: Register Fury's built-in scoped ``memory`` tool.
+            memory_tool_name: Override the default built-in memory tool name.
+            base_url: OpenAI-compatible server base URL.
+            api_key: API key for the backend.
+            generation_params: Extra completion parameters such as temperature.
+            max_tool_rounds: Maximum number of tool-calling rounds per request.
+            parallel_tool_calls: Enable Fury's built-in parallel tool wrapper.
+            client_options: Extra keyword arguments passed to the HTTP client.
+            suppress_logs: Prevent printing the agent summary on initialization.
+        """
         self.model = model
+        self.base_system_prompt = system_prompt
         self.system_prompt = system_prompt
         self.max_tool_rounds = max_tool_rounds
         self.stt = None
@@ -59,8 +108,36 @@ class Agent:
         self.base_url = base_url
         self.generation_params = generation_params or {}
         self.parallel_tool_calls = parallel_tool_calls
+        self.memory_scope = (
+            str(memory_scope).strip() if memory_scope is not None else None
+        )
+        self.memory_store = memory_store
 
-        self._tool_registry = ToolRegistry(tools=tools)
+        if self.memory_scope == "":
+            raise ValueError("memory_scope must be a non-empty string")
+        if self.memory_scope is None and self.memory_store is not None:
+            raise ValueError("memory_scope is required when memory_store is provided")
+        if self.memory_scope is not None and self.memory_store is None:
+            self.memory_store = MemoryStore()
+
+        configured_tools: List[Any] = list(tools or [])
+        if self.memory_scope is not None and enable_memory_tool:
+            if any(
+                _get_registered_tool_name(tool) == memory_tool_name
+                for tool in configured_tools
+            ):
+                raise ValueError(
+                    f"Tool name '{memory_tool_name}' is already registered."
+                )
+            configured_tools.append(
+                create_memory_tool(
+                    self.memory_store,
+                    self.memory_scope,
+                    name=memory_tool_name,
+                )
+            )
+
+        self._tool_registry = ToolRegistry(tools=configured_tools)
         self._tool_executor = ToolExecutor(
             self._tool_registry,
             parallel_tool_calls=parallel_tool_calls,
@@ -80,22 +157,8 @@ class Agent:
             tool_executor=self._tool_executor,
         )
 
-        if suppress_logs:
+        if not suppress_logs:
             self.show_yourself()
-
-    def add_image_to_history(
-        self,
-        history: List[Dict[str, Any]],
-        image_path: str,
-    ) -> List[Dict[str, Any]]:
-        return add_image_to_history(history, image_path)
-
-    def add_voice_message_to_history(
-        self,
-        history: List[Dict[str, Any]],
-        base64_audio_bytes: str,
-    ) -> List[Dict[str, Any]]:
-        return add_voice_message_to_history(history, base64_audio_bytes, self)
 
     def speak(
         self,
@@ -113,6 +176,15 @@ class Agent:
             backbone_path=backbone_path,
             codec_path=codec_path,
         )
+
+    def build_system_prompt(self) -> str:
+        snapshot = self.capture_memory_snapshot()
+        return compose_prompt_with_memory(self.base_system_prompt, snapshot)
+
+    def capture_memory_snapshot(self) -> Optional[MemorySnapshot]:
+        if self.memory_store is None or self.memory_scope is None:
+            return None
+        return self.memory_store.capture_snapshot(self.memory_scope)
 
     def runner(self) -> "Runner":
         return Runner(self)
@@ -178,12 +250,13 @@ class Agent:
         )
 
     def show_yourself(self) -> None:
+        rendered_prompt = self.build_system_prompt()
         info = [
             ("Model", self.model),
             ("Tools", [tool["function"]["name"] for tool in self.tools]),
             (
                 "System prompt",
-                (self.system_prompt[:100] + "...") if self.system_prompt else None,
+                (rendered_prompt + "...") if rendered_prompt else None,
             ),
         ]
 

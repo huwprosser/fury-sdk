@@ -8,6 +8,7 @@ The `Agent` class is the core runtime for chatting with an OpenAI-compatible mod
 - **Interruptible generation** via `Runner.cancel()` and `Runner.interrupt()`.
 - **Tool calling** through `create_tool()` and registered tools.
 - **Parallel tool execution** using the built-in `multi_tool_use.parallel` wrapper.
+- **Named durable memory scopes** via `memory_scope=...`.
 - **Multimodal inputs** with helper methods for images and voice messages.
 - **Optional TTS** via `Agent.speak()`.
 
@@ -144,6 +145,12 @@ Stream consumers receive these as `ChatStreamEvent(tool_ui=...)`, separate from 
 
 You can override the configured agent model per request by passing `model="..."` to `Agent.chat()`, `Agent.ask()`, `Agent.ask_async()`, or `Runner.chat()`.
 
+## Durable Memory
+
+Pass `memory_scope="my-project"` to bind the agent to an explicit durable-memory namespace. Fury will inject the current memory snapshot for that scope into the system prompt on each turn and will register a `memory` tool scoped only to that namespace.
+
+If you want multiple agents in the same script with airgapped memory, give them different `memory_scope` values. To share the same backing directory across agents, pass the same `MemoryStore` instance along with different scope strings.
+
 ## Multimodal Helpers
 
 For managed histories, prefer:
@@ -162,9 +169,12 @@ For managed histories, prefer:
 - `model`: Model name.
 - `system_prompt`: System instruction string.
 - `tools`: List of `Tool` objects from `create_tool()`.
+- `memory_scope`: Optional durable-memory namespace for this agent.
+- `memory_store`: Optional `MemoryStore` to reuse across agents.
+- `enable_memory_tool`: Register the built-in `memory` tool for the bound scope.
+- `memory_tool_name`: Override the default tool name (`memory`).
 - `base_url`: OpenAI-compatible server URL.
 - `api_key`: API key for the server.
 - `generation_params`: Additional model parameters (temperature, max_tokens, etc.).
 - `max_tool_rounds`: Maximum tool-call iterations per request.
 - `parallel_tool_calls`: Enable the built-in parallel tool wrapper.
-- `tts_provider`: Optional custom TTS provider.

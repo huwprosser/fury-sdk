@@ -8,7 +8,7 @@ This example is a semi-vibe-coded clone of the Pi.dev coding assistant example t
 It strips away most of Pi's features but does include:
 - Auto-compaction of history.
 - AgentSkills system.
-- SOUL.md and MEMORY.md injection.
+- SOUL.md injection.
 - A handful of useful tools for the agent to use.
 
 It is a simple example of how to use the Fury agent library to create a coding assistant.
@@ -420,7 +420,7 @@ def format_token_count(count: int) -> str:
 
 def load_context_files() -> List[tuple[str, str]]:
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    candidates = ["SOUL.md", "MEMORY.md"]
+    candidates = ["SOUL.md"]
     context_files: List[tuple[str, str]] = []
 
     for filename in candidates:
@@ -469,8 +469,7 @@ Guidelines:
 - When a skill applies, read its SKILL.md and follow any linked docs before acting.
 - Use multi_tool_use.parallel to batch independent tool calls instead of sequential calls.            
 - Before creating or modifying a skill, ALWAYS read docs/skills.md and follow it exactly.
-
-MEMORY.md: Access long-term facts, user preferences, and historical context from MEMORY.md when relevant to the conversation."""
+- Durable memory should be handled through Fury's memory APIs, not a MEMORY.md file."""
 
     if context_files:
         prompt += "\n\n# Project Context\n\n"

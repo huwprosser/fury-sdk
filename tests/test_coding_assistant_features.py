@@ -38,6 +38,20 @@ def test_coding_assistant_read_tool_returns_image_payload_for_images(tmp_path, c
     assert result["image_base64"] == "ZmFrZS1pbWFnZQ=="
 
 
+def test_coding_assistant_load_context_files_ignores_memory_markdown(
+    tmp_path, coding_assistant_module
+):
+    soul_path = tmp_path / "SOUL.md"
+    soul_path.write_text("soul", encoding="utf-8")
+    memory_path = tmp_path / "MEMORY.md"
+    memory_path.write_text("memory", encoding="utf-8")
+    coding_assistant_module.__file__ = str(tmp_path / "coding_assistant.py")
+
+    context_files = coding_assistant_module.load_context_files()
+
+    assert context_files == [(str(soul_path), "soul")]
+
+
 def test_coding_assistant_bash_tool_truncates_large_output_and_reports_exit_code(
     monkeypatch, coding_assistant_module
 ):

@@ -8,6 +8,7 @@ from .utils.history_summary import (
     find_history_cut_index,
 )
 from .utils.validation import validate_message
+from .utils.voice import add_voice_message_to_history
 
 DEFAULT_SUMMARY_SYSTEM_PROMPT = (
     "Summarize the conversation for future context using this format:\n"
@@ -111,7 +112,11 @@ class HistoryManager:
     async def add_voice(self, base64_audio_bytes: str) -> List[Dict[str, Any]]:
         if self.agent is None:
             raise ValueError("HistoryManager.add_voice() requires an Agent instance.")
-        message = self.agent.add_voice_message_to_history([], base64_audio_bytes)[0]
+        message = add_voice_message_to_history(
+            [],
+            base64_audio_bytes,
+            self.agent,
+        )[0]
         return await self.add(message)
 
     def get_context_usage(self) -> tuple[int, float]:
