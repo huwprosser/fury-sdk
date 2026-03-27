@@ -16,12 +16,12 @@
 A flexible and powerful AI agent library for Python, designed to build agents with tool support, multimodal capabilities, and streaming responses.
 
 ## Features
-- **[New] Interruption and early stopping**: Agents now use the Runner pattern, allowing them to be interrupted or stopped mid-generation.
+- **[New] Durable Memory**: Persist named memory scopes, bind them to individual agents, and expose an airgapped memory tool.
+- **Interruption and early stopping**: Agents now use the Runner pattern, allowing them to be interrupted or stopped mid-generation.
 - **Tool Support**: Define and register custom tools (functions) that the agent can execute and parallel tool execution support.
 - **Image and Voice inputs**: Support for image and voice inputs (using Whisper for STT).
 - **Text-to-Speech (TTS)**: Generate audio with NeuTTS via `Agent.speak()`.
 - **History Management**: Use `HistoryManager` for auto-compaction support or `StaticHistoryManager` for strict fixed-size context trimming.
-- **Durable Memory**: Persist named memory scopes, bind them to individual agents, and expose an airgapped memory tool.
 
 
 ## Installation
