@@ -173,6 +173,15 @@ class ToolExecutor:
             missing_result = object()
 
             if fname not in self.registry.available_functions:
+                payload, error_msg = _tool_error_payload(
+                    call_id,
+                    fname,
+                    f"Error: tool '{fname}' is not registered.",
+                )
+                yield ChatStreamEvent(
+                    tool_call=ToolCallEvent(tool_name=fname, result=error_msg)
+                )
+                active_history.append(payload)
                 continue
 
             try:
@@ -193,22 +202,39 @@ class ToolExecutor:
             )
 
             result = missing_result
-            async for event in self.execute_tool(fname, filtered_args, session=session):
-                if (
-                    event.tool_call
-                    and event.tool_call.tool_name == fname
-                    and event.tool_call.arguments is None
-                ):
-                    result = event.tool_call.result
-                yield event
-                if session and session.stop_requested:
-                    return
-
-            normalized_result, output_schema = _normalize_tool_result(
-                None if result is missing_result else result
-            )
-            if output_schema:
-                yield ChatStreamEvent(reasoning=f"data_{json.dumps(output_schema)}")
+            tool_error = None
+            try:
+                async for event in self.execute_tool(fname, filtered_args, session=session):
+                    if (
+                        event.tool_call
+                        and event.tool_call.tool_name == fname
+                        and event.tool_call.arguments is None
+                    ):
+                        result = event.tool_call.result
+                    yield event
+                    if session and session.stop_requested:
+                        return
+            except Exception as exc:
+                # Capture the error and yield it as a tool result
+                tool_error = f"Error executing {fname}: {str(exc)}"
+                logger.warning(tool_error)
+            
+            # Check if there was an error during tool execution
+            if tool_error:
+                # Yield the error as a tool result
+                yield ChatStreamEvent(
+                    tool_call=ToolCallEvent(
+                        tool_name=fname, 
+                        result=tool_error
+                    )
+                )
+                normalized_result = tool_error
+            else:
+                normalized_result, output_schema = _normalize_tool_result(
+                    None if result is missing_result else result
+                )
+                if output_schema:
+                    yield ChatStreamEvent(reasoning=f"data_{json.dumps(output_schema)}")
 
             tool_content, vision_message = _format_multimodal_content(normalized_result)
             active_history.append(
@@ -237,12 +263,15 @@ class ToolExecutor:
             event = _normalize_tool_ui_event(payload)
             loop.call_soon_threadsafe(queue.put_nowait, event)
 
+        error_holder = {"error": None}
+        
         async def run_tool() -> Any:
             try:
                 return await self._invoke_tool_callable(func, args, emit)
             except Exception as exc:
                 logger.exception(f"Error executing tool {tool_name}")
-                return f"Error: {str(exc)}"
+                error_holder["error"] = exc
+                return None
             finally:
                 loop.call_soon(queue.put_nowait, done)
 
@@ -265,6 +294,15 @@ class ToolExecutor:
                 if session and session.stop_requested:
                     return
                 raise
+
+            # Check if there was an error
+            if error_holder["error"]:
+                # Keep the error format consistent with existing tests
+                error_msg = f"Error: {error_holder['error']}"
+                yield ChatStreamEvent(
+                    tool_call=ToolCallEvent(tool_name=tool_name, result=error_msg)
+                )
+                return  # Don't yield the normal result event
 
             yield ChatStreamEvent(
                 tool_call=ToolCallEvent(tool_name=tool_name, result=result)

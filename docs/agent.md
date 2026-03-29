@@ -160,9 +160,13 @@ For managed histories, prefer:
 
 `Agent` still exposes lower-level helpers for direct list-based history management.
 
+Pass `disable_stt=True` to skip STT warmup and reject voice transcription for that agent.
+
 ## Text-to-Speech
 
 `Agent.speak()` uses the NeuTTS backend to generate audio from text, conditioned on a reference clip. See `examples/tts.py` for a complete example.
+
+Pass `disable_tts=True` to prevent TTS warmup and audio generation for that agent.
 
 ## Constructor Arguments
 
@@ -178,3 +182,5 @@ For managed histories, prefer:
 - `generation_params`: Additional model parameters (temperature, max_tokens, etc.).
 - `max_tool_rounds`: Maximum tool-call iterations per request.
 - `parallel_tool_calls`: Enable the built-in parallel tool wrapper.
+- `disable_stt`: Skip STT warmup and disable `HistoryManager.add_voice()`.
+- `disable_tts`: Skip TTS warmup and disable `Agent.speak()`.

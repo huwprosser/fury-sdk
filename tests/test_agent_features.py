@@ -497,6 +497,48 @@ def test_agent_surfaces_tool_execution_errors_without_crashing_conversation():
     )
 
 
+def test_agent_surfaces_missing_tool_errors_in_followup_model_context():
+    def second_response(kwargs):
+        tool_messages = [m for m in kwargs["messages"] if m.get("role") == "tool"]
+        assert tool_messages[-1]["name"] == "missing_tool"
+        assert tool_messages[-1]["content"] == "Error: tool 'missing_tool' is not registered."
+        return FakeCompletion([FakeDelta(content="Recovered after missing tool.")])
+
+    create = SequencedCreate(
+        [
+            FakeCompletion(
+                [
+                    FakeDelta(
+                        tool_calls=[
+                            FakeToolCallChunk(
+                                0,
+                                id="call_1",
+                                name="missing_tool",
+                                arguments="{}",
+                            )
+                        ]
+                    )
+                ]
+            ),
+            second_response,
+        ]
+    )
+    agent = Agent(model="test-model", system_prompt="You are helpful.")
+    agent.client = make_fake_client(create)
+
+    events = collect_chat(agent, [{"role": "user", "content": "use missing tool"}])
+
+    assert any(
+        event.tool_call
+        and event.tool_call.tool_name == "missing_tool"
+        and event.tool_call.result == "Error: tool 'missing_tool' is not registered."
+        for event in events
+    )
+    assert "".join(event.content for event in events if event.content) == (
+        "Recovered after missing tool."
+    )
+
+
 def test_agent_handles_invalid_tool_call_json_gracefully():
     create = SequencedCreate(
         [
@@ -915,6 +957,17 @@ def test_agent_speak_raises_when_reference_audio_or_text_missing():
 
     with pytest.raises(ValueError, match="ref_text"):
         agent.speak(text="hello", ref_text="", ref_audio_path="ref.wav")
+
+
+def test_agent_speak_raises_when_tts_disabled():
+    agent = Agent(
+        model="test-model",
+        system_prompt="You are helpful.",
+        disable_tts=True,
+    )
+
+    with pytest.raises(RuntimeError, match="TTS is disabled"):
+        agent.speak(text="hello", ref_text="ref", ref_audio_path="ref.wav")
 
 
 def test_agent_speak_prewarms_reference_audio_before_iteration(monkeypatch):

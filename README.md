@@ -138,6 +138,8 @@ agent = Agent(
     model="your-model-name",
     system_prompt="You are a helpful assistant.",
     parallel_tool_calls=False,
+    disable_stt=False,
+    disable_tts=False,
     generation_params={
         "temperature": 0.2,
         "max_tokens": 512,

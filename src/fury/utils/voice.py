@@ -10,6 +10,10 @@ from .console import silence_console_output
 logger = logging.getLogger(__name__)
 
 
+def _is_stt_disabled(agent: Any) -> bool:
+    return bool(getattr(agent, "disable_stt", False))
+
+
 def _create_transcription_model() -> Any:
     try:
         from faster_whisper import WhisperModel
@@ -23,6 +27,9 @@ def _create_transcription_model() -> Any:
 
 
 def prewarm_transcription_model(agent: Any) -> bool:
+    if _is_stt_disabled(agent):
+        return False
+
     if getattr(agent, "stt", None) is not None:
         return True
 
@@ -47,6 +54,9 @@ def add_voice_message_to_history(
     base64_audio_bytes: str,
     agent: Any,
 ) -> List[Dict[str, Any]]:
+    if _is_stt_disabled(agent):
+        raise RuntimeError("STT is disabled for this agent.")
+
     if getattr(agent, "stt", None) is None:
         agent.stt = _create_transcription_model()
 

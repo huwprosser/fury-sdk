@@ -8,6 +8,10 @@ from .console import silence_console_output
 logger = logging.getLogger(__name__)
 
 
+def _is_tts_disabled(agent: Any) -> bool:
+    return bool(getattr(agent, "disable_tts", False))
+
+
 def _create_text_to_speech_model(
     *,
     backbone_path: str,
@@ -34,10 +38,13 @@ def _create_text_to_speech_model(
 def prewarm_text_to_speech(
     agent: Any,
     *,
-    ref_audio_path: str,
+    ref_audio_path: Optional[str] = None,
     backbone_path: str = "neuphonic/neutts-nano-q4-gguf",
     codec_path: str = "neuphonic/neucodec-onnx-decoder",
-) -> Any:
+) -> Optional[Any]:
+    if _is_tts_disabled(agent):
+        return None
+
     if not agent.suppress_logs:
         print("Warming up TTS...")
     if agent.tts is None:
@@ -47,7 +54,7 @@ def prewarm_text_to_speech(
         )
 
     prepare_reference_audio = getattr(agent.tts, "prepare_reference_audio", None)
-    if callable(prepare_reference_audio):
+    if ref_audio_path and callable(prepare_reference_audio):
         with silence_console_output():
             prepare_reference_audio(ref_audio_path)
 
@@ -64,6 +71,8 @@ def speak_text(
     codec_path: str = "neuphonic/neucodec-onnx-decoder",
 ) -> Any:
     logger.debug("Speaking: %s", text[:50])
+    if _is_tts_disabled(agent):
+        raise RuntimeError("TTS is disabled for this agent.")
     if not ref_audio_path:
         raise ValueError("Provide ref_audio_path for TTS.")
     if not ref_text:
