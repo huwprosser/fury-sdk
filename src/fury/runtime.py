@@ -171,12 +171,16 @@ def _build_chat_completion_kwargs(
         "messages": active_history,
         "stream": True,
     }
-    if not reasoning:
-        kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
-    if tools:
-        kwargs["tools"] = tools
     if generation_params:
         kwargs.update(generation_params)
+    if not reasoning:
+        extra_body = dict(kwargs.get("extra_body") or {})
+        chat_template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
+        chat_template_kwargs["enable_thinking"] = False
+        extra_body["chat_template_kwargs"] = chat_template_kwargs
+        kwargs["extra_body"] = extra_body
+    if tools:
+        kwargs["tools"] = tools
     kwargs["model"] = model
     return kwargs
 

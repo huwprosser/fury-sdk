@@ -140,6 +140,45 @@ def test_agent_streams_reasoning_only_when_enabled():
     assert "".join(event.content for event in enabled if event.content) == "answer"
 
 
+def test_agent_merges_reasoning_disable_into_extra_body_generation_params():
+    create = SequencedCreate([FakeCompletion([FakeDelta(content="ok")])])
+    generation_params = {
+        "temperature": 0.2,
+        "extra_body": {
+            "top_k": 10,
+            "chat_template_kwargs": {"existing_flag": True},
+        },
+    }
+    agent = Agent(
+        model="test-model",
+        system_prompt="You are helpful.",
+        generation_params=generation_params,
+    )
+    agent.client = make_fake_client(create)
+
+    collect_chat(
+        agent,
+        [{"role": "user", "content": "stream text"}],
+        reasoning=False,
+    )
+
+    assert create.calls[0]["temperature"] == 0.2
+    assert create.calls[0]["extra_body"] == {
+        "top_k": 10,
+        "chat_template_kwargs": {
+            "existing_flag": True,
+            "enable_thinking": False,
+        },
+    }
+    assert generation_params == {
+        "temperature": 0.2,
+        "extra_body": {
+            "top_k": 10,
+            "chat_template_kwargs": {"existing_flag": True},
+        },
+    }
+
+
 def test_runner_chat_allows_per_request_model_override():
     create = SequencedCreate([FakeCompletion([FakeDelta(content="ok")])])
     agent = Agent(model="default-model", system_prompt="You are helpful.")
