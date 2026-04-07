@@ -144,6 +144,7 @@ def test_agent_merges_reasoning_disable_into_extra_body_generation_params():
     create = SequencedCreate([FakeCompletion([FakeDelta(content="ok")])])
     generation_params = {
         "temperature": 0.2,
+        "chat_template_kwargs": {"top_level_flag": True},
         "extra_body": {
             "top_k": 10,
             "chat_template_kwargs": {"existing_flag": True},
@@ -163,15 +164,21 @@ def test_agent_merges_reasoning_disable_into_extra_body_generation_params():
     )
 
     assert create.calls[0]["temperature"] == 0.2
+    assert create.calls[0]["chat_template_kwargs"] == {
+        "top_level_flag": True,
+        "enable_thinking": False,
+    }
     assert create.calls[0]["extra_body"] == {
         "top_k": 10,
         "chat_template_kwargs": {
             "existing_flag": True,
+            "top_level_flag": True,
             "enable_thinking": False,
         },
     }
     assert generation_params == {
         "temperature": 0.2,
+        "chat_template_kwargs": {"top_level_flag": True},
         "extra_body": {
             "top_k": 10,
             "chat_template_kwargs": {"existing_flag": True},

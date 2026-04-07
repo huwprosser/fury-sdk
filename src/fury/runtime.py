@@ -173,11 +173,17 @@ def _build_chat_completion_kwargs(
     }
     if generation_params:
         kwargs.update(generation_params)
+    chat_template_kwargs = dict(kwargs.get("chat_template_kwargs") or {})
+    if not reasoning:
+        chat_template_kwargs["enable_thinking"] = False
+    if chat_template_kwargs:
+        kwargs["chat_template_kwargs"] = chat_template_kwargs
     if not reasoning:
         extra_body = dict(kwargs.get("extra_body") or {})
-        chat_template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
-        chat_template_kwargs["enable_thinking"] = False
-        extra_body["chat_template_kwargs"] = chat_template_kwargs
+        extra_chat_template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
+        extra_chat_template_kwargs.update(chat_template_kwargs)
+        extra_chat_template_kwargs["enable_thinking"] = False
+        extra_body["chat_template_kwargs"] = extra_chat_template_kwargs
         kwargs["extra_body"] = extra_body
     if tools:
         kwargs["tools"] = tools
