@@ -15,6 +15,12 @@ uv add "git+https://github.com/huwprosser/fury.git[examples]"
 uv run examples/chat.py
 ```
 
+**Persistent Chat Log:**
+
+```bash
+uv run examples/persistent_chat.py
+```
+
 **Chat With Durable Memory:**
 
 ```bash
@@ -55,6 +61,7 @@ uv run examples/voice_chat.py
     - `types.py`: Public event and tool types.
 - `examples/`: Usage examples.
     - `chat.py`: Basic chat loop.
+    - `persistent_chat.py`: Chat loop that persists a full JSONL transcript and reloads it on startup.
     - `memory_chat.py`: Chat loop with a named durable-memory scope and a scoped memory tool.
     - `interruption.py`: Chat loop with a hotkey that interrupts a streamed reply and keeps the partial output in history.
     - `tts.py`: NeuTTS example.

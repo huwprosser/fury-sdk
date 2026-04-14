@@ -1,4 +1,11 @@
-from typing import Any, Dict, List, Optional
+import hashlib
+import json
+import os
+import re
+import tempfile
+from pathlib import Path
+from threading import RLock
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from .multimodal import build_image_message
 from .transport import AsyncOpenAICompatibleClient
@@ -9,6 +16,9 @@ from .utils.history_summary import (
 )
 from .utils.validation import validate_message
 from .utils.voice import add_voice_message_to_history, prewarm_transcription_model
+
+if TYPE_CHECKING:
+    from .agent import Agent
 
 DEFAULT_SUMMARY_SYSTEM_PROMPT = (
     "Summarize the conversation for future context using this format:\n"
@@ -37,6 +47,38 @@ DEFAULT_SUMMARY_SYSTEM_PROMPT = (
     "</modified-files>\n\n"
     "Be concise but include key decisions, filenames, commands, and TODOs."
 )
+DEFAULT_HISTORY_ROOT = ".fury/history"
+
+
+def _looks_like_agent(value: Any) -> bool:
+    return (
+        value is not None
+        and hasattr(value, "runner")
+        and hasattr(value, "client")
+        and hasattr(value, "model")
+    )
+
+
+class _ManagedHistory(list):
+    def __init__(
+        self,
+        owner: "HistoryManager",
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        super().__init__(messages or [])
+        self._owner = owner
+
+    def append(self, message: Dict[str, Any]) -> None:
+        self._owner._validate_message(message)
+        self._owner._append_persisted_messages([message])
+        super().append(message)
+
+    def extend(self, messages: List[Dict[str, Any]]) -> None:
+        pending = list(messages)
+        for message in pending:
+            self._owner._validate_message(message)
+        self._owner._append_persisted_messages(pending)
+        super().extend(pending)
 
 
 class HistoryManager:
@@ -55,8 +97,13 @@ class HistoryManager:
         keep_recent_tokens: int = 8000,
         summary_prefix: str = "Summary of previous conversation:",
         summary_system_prompt: str = DEFAULT_SUMMARY_SYSTEM_PROMPT,
+        persist_to_disk: bool = False,
+        session_id: Optional[str] = None,
+        history_root: str = DEFAULT_HISTORY_ROOT,
+        show_compaction_status: Optional[bool] = None,
     ) -> None:
-        self.history: List[Dict[str, Any]] = list(history or [])
+        initial_history, agent = self._coerce_history_and_agent(history, agent)
+        self._disk_lock = RLock()
         self.agent = agent
         self.context_window = context_window
         self.reserve_tokens = reserve_tokens
@@ -64,6 +111,14 @@ class HistoryManager:
         self.summary_prefix = summary_prefix
         self.summary_system_prompt = summary_system_prompt
         self.auto_compact = auto_compact
+        self.persist_to_disk = persist_to_disk
+        self.session_id = str(session_id).strip() if session_id is not None else None
+        self.history_root = Path(history_root)
+        self.history_path: Optional[Path] = None
+        self._needs_load_compaction = False
+        if show_compaction_status is None:
+            show_compaction_status = not bool(getattr(agent, "suppress_logs", False))
+        self.show_compaction_status = bool(show_compaction_status)
 
         if agent is not None:
             client = client or agent.client
@@ -79,26 +134,41 @@ class HistoryManager:
                 "(or an Agent instance)."
             )
 
+        if self.persist_to_disk:
+            if not self.session_id:
+                raise ValueError(
+                    "session_id is required when persist_to_disk is enabled."
+                )
+            self.history_path = self._path_for_session(self.session_id)
+            loaded_history = self._load_persisted_history()
+            if loaded_history:
+                self._set_history(loaded_history)
+                self._needs_load_compaction = self.auto_compact
+            else:
+                self._set_history(initial_history)
+                if self.history:
+                    self._rewrite_persisted_history(list(self.history))
+        else:
+            self._set_history(initial_history)
+
     async def add(self, message: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Add a message and auto-compact if configured."""
-        self._validate_message(message)
+        await self._compact_loaded_history_if_needed()
         self.history.append(message)
         if self.auto_compact:
-            self.history = await self._compact_history(self.history)
+            self._set_history(await self._compact_history(list(self.history)))
         return self.history
 
     async def extend(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Append multiple messages and auto-compact if configured."""
-        for message in messages:
-            self._validate_message(message)
+        await self._compact_loaded_history_if_needed()
         self.history.extend(messages)
         if self.auto_compact:
-            self.history = await self._compact_history(self.history)
+            self._set_history(await self._compact_history(list(self.history)))
         return self.history
 
     def add_nowait(self, message: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Add a message without compacting (sync convenience)."""
-        self._validate_message(message)
         self.history.append(message)
         return self.history
 
@@ -128,8 +198,128 @@ class HistoryManager:
     def _validate_message(self, message: Dict[str, Any]) -> None:
         validate_message(message)
 
+    def _set_history(self, messages: List[Dict[str, Any]]) -> None:
+        self.history = _ManagedHistory(self, messages)
+
+    async def _compact_loaded_history_if_needed(self) -> None:
+        if not self._needs_load_compaction:
+            return
+        self._set_history(
+            await self._compact_history(
+                list(self.history),
+                context_label="restored history",
+            )
+        )
+        self._needs_load_compaction = False
+
+    def _print_compaction_status(self, context_label: str, context_tokens: int) -> None:
+        if not self.show_compaction_status:
+            return
+        print(
+            f"[history] Compacting {context_label} "
+            f"(estimated {context_tokens} tokens)...",
+            flush=True,
+        )
+
+    @staticmethod
+    def _coerce_history_and_agent(
+        history: Optional[List[Dict[str, Any]]],
+        agent: Optional["Agent"],
+    ) -> tuple[List[Dict[str, Any]], Optional["Agent"]]:
+        if agent is None and _looks_like_agent(history):
+            return [], history
+        return list(history or []), agent
+
     def _estimate_tokens_for_message(self, message: Dict[str, Any]) -> int:
         return estimate_message_tokens(message)
+
+    def _path_for_session(self, session_id: str) -> Path:
+        slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", session_id).strip("-")
+        digest = hashlib.sha1(session_id.encode("utf-8")).hexdigest()[:10]
+        filename = f"{slug or 'session'}-{digest}.jsonl"
+        return self.history_root / filename
+
+    def _load_persisted_history(self) -> List[Dict[str, Any]]:
+        if self.history_path is None or not self.history_path.exists():
+            return []
+
+        history: List[Dict[str, Any]] = []
+        with self._disk_lock:
+            try:
+                with open(self.history_path, "r", encoding="utf-8") as handle:
+                    for raw_line in handle:
+                        line = raw_line.strip()
+                        if not line:
+                            continue
+                        try:
+                            payload = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(payload, dict):
+                            continue
+                        try:
+                            validate_message(payload)
+                        except ValueError:
+                            continue
+                        history.append(payload)
+            except OSError:
+                return []
+        return history
+
+    def _serialize_message(self, message: Dict[str, Any]) -> str:
+        try:
+            return json.dumps(message, ensure_ascii=False)
+        except TypeError as exc:
+            raise ValueError(
+                "History messages must be JSON serializable when persist_to_disk is enabled."
+            ) from exc
+
+    def _append_persisted_messages(self, messages: List[Dict[str, Any]]) -> None:
+        if not self.persist_to_disk or self.history_path is None or not messages:
+            return
+
+        serialized_messages = [
+            self._serialize_message(message)
+            for message in messages
+        ]
+        path = self.history_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with self._disk_lock:
+            with open(path, "a", encoding="utf-8") as handle:
+                for serialized in serialized_messages:
+                    handle.write(serialized + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+
+    def _rewrite_persisted_history(self, messages: List[Dict[str, Any]]) -> None:
+        if not self.persist_to_disk or self.history_path is None:
+            return
+
+        serialized_messages = [
+            self._serialize_message(message)
+            for message in messages
+        ]
+        path = self.history_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temp_path = tempfile.mkstemp(
+            prefix=".history-",
+            suffix=".jsonl",
+            dir=str(path.parent),
+        )
+        try:
+            with self._disk_lock:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    for serialized in serialized_messages:
+                        handle.write(serialized + "\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temp_path, path)
+        finally:
+            if os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
 
     def _should_compact(self, context_tokens: int) -> bool:
         return context_tokens > self.context_window - self.reserve_tokens
@@ -141,7 +331,10 @@ class HistoryManager:
         )
 
     async def _compact_history(
-        self, history: List[Dict[str, Any]]
+        self,
+        history: List[Dict[str, Any]],
+        *,
+        context_label: str = "history",
     ) -> List[Dict[str, Any]]:
         if not history:
             return history
@@ -175,6 +368,8 @@ class HistoryManager:
         )
         if not summary_prompt:
             return history
+
+        self._print_compaction_status(context_label, context_tokens)
 
         completion = await self.client.chat.completions.create(
             model=self.summary_model,
@@ -210,25 +405,21 @@ class StaticHistoryManager(HistoryManager):
             keep_recent_tokens=target_context_length,
         )
         self.target_context_length = target_context_length
-        self.history = self._fit_to_target(self.history)
+        self._set_history(self._fit_to_target(list(self.history)))
 
     async def add(self, message: Dict[str, Any]) -> List[Dict[str, Any]]:
-        self._validate_message(message)
         self.history.append(message)
-        self.history = self._fit_to_target(self.history)
+        self._set_history(self._fit_to_target(list(self.history)))
         return self.history
 
     async def extend(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        for message in messages:
-            self._validate_message(message)
         self.history.extend(messages)
-        self.history = self._fit_to_target(self.history)
+        self._set_history(self._fit_to_target(list(self.history)))
         return self.history
 
     def add_nowait(self, message: Dict[str, Any]) -> List[Dict[str, Any]]:
-        self._validate_message(message)
         self.history.append(message)
-        self.history = self._fit_to_target(self.history)
+        self._set_history(self._fit_to_target(list(self.history)))
         return self.history
 
     def _fit_to_target(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

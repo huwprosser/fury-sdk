@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import sys
 import tempfile
 import types
@@ -113,6 +114,210 @@ def test_history_manager_replaces_existing_summary_instead_of_stacking_multiple_
     assert "Second summary" in history[0]["content"]
 
 
+def test_history_manager_persists_raw_messages_to_jsonl():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        manager = HistoryManager(
+            auto_compact=False,
+            persist_to_disk=True,
+            session_id="session-123",
+            history_root=tmpdir,
+        )
+
+        asyncio.run(
+            manager.extend(
+                [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "world"},
+                ]
+            )
+        )
+
+        assert manager.history_path is not None
+        persisted = [
+            json.loads(line)
+            for line in manager.history_path.read_text(encoding="utf-8").splitlines()
+        ]
+        assert persisted == manager.history
+
+
+def test_history_manager_loads_persisted_history_on_init():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        first = HistoryManager(
+            auto_compact=False,
+            persist_to_disk=True,
+            session_id="session-123",
+            history_root=tmpdir,
+        )
+        asyncio.run(first.add({"role": "user", "content": "hello"}))
+        asyncio.run(first.add({"role": "assistant", "content": "world"}))
+
+        second = HistoryManager(
+            auto_compact=False,
+            persist_to_disk=True,
+            session_id="session-123",
+            history_root=tmpdir,
+        )
+
+        assert second.history == [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "world"},
+        ]
+
+
+def test_history_manager_persists_direct_history_appends():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        manager = HistoryManager(
+            auto_compact=False,
+            persist_to_disk=True,
+            session_id="session-123",
+            history_root=tmpdir,
+        )
+
+        manager.history.append({"role": "assistant", "content": "partial reply"})
+
+        persisted = [
+            json.loads(line)
+            for line in manager.history_path.read_text(encoding="utf-8").splitlines()
+        ]
+        assert persisted == [{"role": "assistant", "content": "partial reply"}]
+
+
+def test_history_manager_compacts_loaded_history_before_first_new_message():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        seed = HistoryManager(
+            auto_compact=False,
+            persist_to_disk=True,
+            session_id="session-123",
+            history_root=tmpdir,
+        )
+
+        async def seed_history():
+            for idx in range(6):
+                await seed.add({"role": "user", "content": f"hello {'x' * 50} {idx}"})
+                await seed.add(
+                    {"role": "assistant", "content": f"reply {'y' * 50} {idx}"}
+                )
+
+        asyncio.run(seed_history())
+
+        client = FakeClient(["Summary content"])
+        manager = HistoryManager(
+            client=client,
+            summary_model="fake-model",
+            auto_compact=True,
+            context_window=60,
+            reserve_tokens=10,
+            keep_recent_tokens=10,
+            summary_prefix="Summary:",
+            persist_to_disk=True,
+            session_id="session-123",
+            history_root=tmpdir,
+        )
+
+        asyncio.run(manager.add({"role": "user", "content": "fresh message"}))
+
+        assert manager.history[0]["role"] == "system"
+        assert manager.history[0]["content"].startswith("Summary:")
+        assert manager.history[-1] == {"role": "user", "content": "fresh message"}
+        persisted = [
+            json.loads(line)
+            for line in manager.history_path.read_text(encoding="utf-8").splitlines()
+        ]
+        assert len(persisted) == 13
+        assert all(message["role"] != "system" for message in persisted)
+        assert persisted[-1] == {"role": "user", "content": "fresh message"}
+
+
+def test_history_manager_prints_notice_when_auto_compacting(capfd):
+    client = FakeClient(["Summary content"])
+    manager = HistoryManager(
+        client=client,
+        summary_model="fake-model",
+        auto_compact=True,
+        context_window=60,
+        reserve_tokens=10,
+        keep_recent_tokens=10,
+        summary_prefix="Summary:",
+    )
+
+    async def run():
+        for idx in range(6):
+            await manager.add({"role": "user", "content": f"hello {'x' * 50} {idx}"})
+            await manager.add({"role": "assistant", "content": f"reply {'y' * 50} {idx}"})
+
+    asyncio.run(run())
+    captured = capfd.readouterr()
+
+    assert "[history] Compacting history" in captured.out
+
+
+def test_history_manager_suppresses_compaction_notice_with_suppress_logs(capfd):
+    client = FakeClient(["Summary content"])
+    agent = Agent(
+        model="test-model",
+        system_prompt="You are helpful.",
+        disable_stt=True,
+        suppress_logs=True,
+    )
+    agent.client = client
+
+    manager = HistoryManager(
+        agent=agent,
+        auto_compact=True,
+        context_window=60,
+        reserve_tokens=10,
+        keep_recent_tokens=10,
+        summary_prefix="Summary:",
+    )
+
+    async def run():
+        for idx in range(6):
+            await manager.add({"role": "user", "content": f"hello {'x' * 50} {idx}"})
+            await manager.add({"role": "assistant", "content": f"reply {'y' * 50} {idx}"})
+
+    asyncio.run(run())
+    captured = capfd.readouterr()
+
+    assert captured.out == ""
+
+
+def test_history_manager_persists_raw_messages_even_when_compacting():
+    client = FakeClient(["Summary content"])
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        manager = HistoryManager(
+            client=client,
+            summary_model="fake-model",
+            auto_compact=True,
+            context_window=60,
+            reserve_tokens=10,
+            keep_recent_tokens=10,
+            summary_prefix="Summary:",
+            persist_to_disk=True,
+            session_id="session-123",
+            history_root=tmpdir,
+        )
+
+        async def run():
+            for idx in range(6):
+                await manager.add({"role": "user", "content": f"hello {'x' * 50} {idx}"})
+                await manager.add(
+                    {"role": "assistant", "content": f"reply {'y' * 50} {idx}"}
+                )
+
+        asyncio.run(run())
+
+        assert manager.history[0]["role"] == "system"
+        persisted = [
+            json.loads(line)
+            for line in manager.history_path.read_text(encoding="utf-8").splitlines()
+        ]
+        assert len(persisted) == 12
+        assert all(message["role"] != "system" for message in persisted)
+        assert persisted[0]["content"].endswith("0")
+        assert persisted[-1]["content"].endswith("5")
+
+
 def test_history_manager_includes_tool_file_ops_in_summary_prompt():
     client = FakeClient(["Summary content"])
     manager = HistoryManager(
@@ -141,6 +346,24 @@ def test_history_manager_includes_tool_file_ops_in_summary_prompt():
     prompt = client.chat.completions.calls[0]["messages"][1]["content"]
     assert "Read files: src/app.py" in prompt
     assert "Modified files: README.md, src/app.py" in prompt
+
+
+def test_history_manager_accepts_agent_as_first_positional_argument():
+    agent = Agent(
+        model="test-model",
+        system_prompt="You are helpful.",
+        disable_stt=True,
+        suppress_logs=True,
+    )
+    manager = HistoryManager(agent, auto_compact=False)
+
+    assert manager.agent is agent
+    assert manager.history == []
+
+
+def test_history_manager_requires_session_id_for_disk_persistence():
+    with pytest.raises(ValueError, match="session_id is required"):
+        HistoryManager(auto_compact=False, persist_to_disk=True)
 
 
 def test_static_history_manager_keeps_latest_messages_within_token_budget():

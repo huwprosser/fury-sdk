@@ -48,6 +48,7 @@ print(agent.ask("Hello!", history=[], model="another-model"))
 
 Other examples:
 - [Basic Chat Loop](examples/chat.py)
+- [Persistent Chat Log](examples/persistent_chat.py)
 - [Chat With Durable Memory](examples/memory_chat.py)
 - [Interruption](examples/interruption.py)
 - [Coding Assistant](examples/coding-assistant)
@@ -74,6 +75,23 @@ async for event in runner.chat(history_manager.history):
 ```
 
 See [examples/chat.py](examples/chat.py) for a full working example.
+
+To persist the raw transcript as JSONL and reload it on startup:
+
+```python
+history_manager = HistoryManager(
+    agent,
+    persist_to_disk=True,
+    session_id="demo-session",
+)
+```
+
+This stores the session under `.fury/history/` and rehydrates `history_manager.history`
+from the existing file if the session already exists. See
+[examples/persistent_chat.py](examples/persistent_chat.py) for a runnable example.
+If `auto_compact=True`, a reloaded session is compacted in memory on the first async
+`add()` or `extend()` call, while the JSONL file remains a full raw transcript.
+When compaction runs, Fury prints a short `[history] Compacting ...` notice by default.
 
 If you do not want auto-compaction and a hard history limit, use `StaticHistoryManager`:
 

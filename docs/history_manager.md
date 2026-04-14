@@ -46,6 +46,22 @@ asyncio.run(main())
 
 For a runnable example, see `examples/chat.py`.
 
+To persist a session transcript as JSONL and reload it on startup:
+
+```python
+history_manager = HistoryManager(
+    agent,
+    persist_to_disk=True,
+    session_id="demo-session",
+)
+```
+
+This writes raw messages to `.fury/history/*.jsonl`. On initialization, if the
+session file already exists, `HistoryManager` loads it back into `history`.
+If `auto_compact=True`, the reloaded working set is compacted in memory on the
+first async `add()` or `extend()` call.
+When compaction runs, `HistoryManager` prints a short status line by default.
+
 ## StaticHistoryManager
 
 `StaticHistoryManager` provides a fixed-size history window with no auto compaction and no summary calls. On initialization and every add/extend operation, it drops older messages until the newest messages fit inside `target_context_length`.
@@ -76,6 +92,10 @@ See `docs/example.md` for a full example.
 - `keep_recent_tokens`: Tokens to preserve at the tail (default: `8000`).
 - `summary_prefix`: Prefix used to store and recognize summary messages.
 - `summary_system_prompt`: System prompt for the summary model.
+- `persist_to_disk`: Append raw messages to a JSONL transcript on disk.
+- `session_id`: Session identifier used to name and reload the JSONL file.
+- `history_root`: Directory used for persisted history files (default: `.fury/history`).
+- `show_compaction_status`: Print a short compaction notice (defaults to `False` when the bound agent uses `suppress_logs=True`, otherwise `True`).
 
 ## Manual Control
 
