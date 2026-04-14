@@ -10,6 +10,7 @@ import httpx
 
 from .tools import ToolExecutor, ToolRegistry
 from .types import ChatStreamEvent
+from .multimodal import materialize_history_message
 from .utils.validation import validate_history
 
 logger = logging.getLogger(__name__)
@@ -153,7 +154,7 @@ def _prepare_active_history(
     history: List[Dict[str, Any]],
     system_prompt: str,
 ) -> List[Dict[str, Any]]:
-    active_history = list(history)
+    active_history = [materialize_history_message(message) for message in history]
     if system_prompt and not any(msg.get("role") == "system" for msg in active_history):
         return [{"role": "system", "content": system_prompt}, *active_history]
     return active_history

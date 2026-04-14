@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import RLock
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from .multimodal import build_image_message
+from .multimodal import build_image_history_message
 from .transport import AsyncOpenAICompatibleClient
 from .utils.history_summary import (
     build_summary_prompt,
@@ -101,6 +101,7 @@ class HistoryManager:
         session_id: Optional[str] = None,
         history_root: str = DEFAULT_HISTORY_ROOT,
         show_compaction_status: Optional[bool] = None,
+        save_images_to_history: bool = False,
     ) -> None:
         initial_history, agent = self._coerce_history_and_agent(history, agent)
         self._disk_lock = RLock()
@@ -119,6 +120,7 @@ class HistoryManager:
         if show_compaction_status is None:
             show_compaction_status = not bool(getattr(agent, "suppress_logs", False))
         self.show_compaction_status = bool(show_compaction_status)
+        self.save_images_to_history = save_images_to_history
 
         if agent is not None:
             client = client or agent.client
@@ -178,7 +180,13 @@ class HistoryManager:
         *,
         text: str = "Image input.",
     ) -> List[Dict[str, Any]]:
-        return await self.add(build_image_message(image_path, text=text))
+        return await self.add(
+            build_image_history_message(
+                image_path,
+                text=text,
+                save_image=self.save_images_to_history,
+            )
+        )
 
     async def add_voice(self, base64_audio_bytes: str) -> List[Dict[str, Any]]:
         if self.agent is None:

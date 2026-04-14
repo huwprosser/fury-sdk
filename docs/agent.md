@@ -159,6 +159,10 @@ For managed histories, prefer:
 - `await history_manager.add_voice(base64_audio_bytes)`
 
 `Agent` still exposes lower-level helpers for direct list-based history management.
+By default, `HistoryManager.add_image(...)` stores a lightweight placeholder in the
+managed history instead of persisting raw base64 image data. Set
+`HistoryManager(save_images_to_history=True)` if you want the full image payload
+embedded in history.
 
 Pass `disable_stt=True` to skip STT warmup and reject voice transcription for that agent.
 

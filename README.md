@@ -92,6 +92,10 @@ from the existing file if the session already exists. See
 If `auto_compact=True`, a reloaded session is compacted in memory on the first async
 `add()` or `extend()` call, while the JSONL file remains a full raw transcript.
 When compaction runs, Fury prints a short `[history] Compacting ...` notice by default.
+Managed image history is lightweight by default: `HistoryManager.add_image(...)`
+stores a `[The user shared an image]` placeholder plus path metadata instead of
+embedding raw base64 in saved history. Set `save_images_to_history=True` to keep
+the full image payload in history.
 
 If you do not want auto-compaction and a hard history limit, use `StaticHistoryManager`:
 

@@ -96,6 +96,7 @@ See `docs/example.md` for a full example.
 - `session_id`: Session identifier used to name and reload the JSONL file.
 - `history_root`: Directory used for persisted history files (default: `.fury/history`).
 - `show_compaction_status`: Print a short compaction notice (defaults to `False` when the bound agent uses `suppress_logs=True`, otherwise `True`).
+- `save_images_to_history`: Persist full base64 image payloads in managed history. Defaults to `False`, which stores a lightweight `[The user shared an image]` placeholder plus image-path metadata and materializes the real image only when building model input.
 
 ## Manual Control
 

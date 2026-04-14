@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from fury import Agent, HistoryManager, StaticHistoryManager
+from fury.multimodal import IMAGE_HISTORY_PLACEHOLDER, materialize_history_message
 
 
 class FakeCompletion:
@@ -383,8 +384,31 @@ def test_static_history_manager_keeps_latest_messages_within_token_budget():
     ]
 
 
-def test_history_manager_add_image_appends_valid_user_message():
+def test_history_manager_add_image_stores_placeholder_by_default():
     manager = HistoryManager(auto_compact=False)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        image_path = Path(tmpdir) / "sample.jpg"
+        image_path.write_bytes(b"fake-image")
+
+        history = asyncio.run(manager.add_image(str(image_path), text="Describe this"))
+        materialized = materialize_history_message(history[-1])
+
+    assert history[-1]["role"] == "user"
+    assert history[-1]["content"][0] == {"type": "text", "text": "Describe this"}
+    assert history[-1]["content"][1] == {
+        "type": "text",
+        "text": IMAGE_HISTORY_PLACEHOLDER,
+    }
+    assert history[-1]["_fury_multimodal"]["kind"] == "image_path"
+    assert materialized["content"][1]["type"] == "image_url"
+    assert materialized["content"][1]["image_url"]["url"].startswith(
+        "data:image/jpeg;base64,"
+    )
+
+
+def test_history_manager_add_image_saves_raw_image_when_enabled():
+    manager = HistoryManager(auto_compact=False, save_images_to_history=True)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         image_path = Path(tmpdir) / "sample.jpg"
@@ -393,9 +417,30 @@ def test_history_manager_add_image_appends_valid_user_message():
         history = asyncio.run(manager.add_image(str(image_path), text="Describe this"))
 
     assert history[-1]["role"] == "user"
-    assert history[-1]["content"][0] == {"type": "text", "text": "Describe this"}
     assert history[-1]["content"][1]["type"] == "image_url"
-    assert history[-1]["content"][1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert history[-1]["content"][1]["image_url"]["url"].startswith(
+        "data:image/jpeg;base64,"
+    )
+    assert "_fury_multimodal" not in history[-1]
+
+
+def test_history_manager_persisted_image_history_avoids_base64_by_default():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        manager = HistoryManager(
+            auto_compact=False,
+            persist_to_disk=True,
+            session_id="session-123",
+            history_root=tmpdir,
+        )
+        image_path = Path(tmpdir) / "sample.jpg"
+        image_path.write_bytes(b"fake-image")
+
+        asyncio.run(manager.add_image(str(image_path), text="Describe this"))
+
+        persisted = manager.history_path.read_text(encoding="utf-8")
+
+    assert IMAGE_HISTORY_PLACEHOLDER in persisted
+    assert "base64," not in persisted
 
 
 def test_history_manager_add_voice_requires_agent():
