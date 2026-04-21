@@ -22,6 +22,8 @@ from .types import (
     ToolUiEvent,
     create_tool,
 )
+from .tts import TextToSpeech
+from .voice import SpeechToText
 
 __all__ = [
     "Agent",
@@ -33,6 +35,8 @@ __all__ = [
     "MemoryStore",
     "Runner",
     "StaticHistoryManager",
+    "SpeechToText",
+    "TextToSpeech",
     "Tool",
     "ToolCallEvent",
     "ToolResult",

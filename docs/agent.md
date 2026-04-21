@@ -158,6 +158,9 @@ For managed histories, prefer:
 - `await history_manager.add_image(image_path, text="...")`
 - `await history_manager.add_voice(base64_audio_bytes)`
 
+If you only need transcription and do not want to initialize an `Agent`, use
+`SpeechToText().transcribe(...)` instead.
+
 `Agent` still exposes lower-level helpers for direct list-based history management.
 By default, `HistoryManager.add_image(...)` stores a lightweight placeholder in the
 managed history instead of persisting raw base64 image data. Set
@@ -168,7 +171,9 @@ Pass `disable_stt=True` to skip STT warmup and reject voice transcription for th
 
 ## Text-to-Speech
 
-`Agent.speak()` uses the NeuTTS backend to generate audio from text, conditioned on a reference clip. See `examples/tts.py` for a complete example.
+`Agent.speak()` uses the NeuTTS backend to generate audio from text, conditioned on a
+reference clip. If you only need standalone synthesis, use `TextToSpeech().speak(...)`
+instead. See `examples/tts.py` for a complete example.
 
 Pass `disable_tts=True` to prevent TTS warmup and audio generation for that agent.
 

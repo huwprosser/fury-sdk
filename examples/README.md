@@ -64,6 +64,6 @@ uv run examples/voice_chat.py
     - `persistent_chat.py`: Chat loop that persists a full JSONL transcript and reloads it on startup.
     - `memory_chat.py`: Chat loop with a named durable-memory scope and a scoped memory tool.
     - `interruption.py`: Chat loop with a hotkey that interrupts a streamed reply and keeps the partial output in history.
-    - `tts.py`: NeuTTS example.
+    - `tts.py`: Standalone `TextToSpeech` NeuTTS example.
     - `voice_chat.py`: Voice chat with Whisper + NeuTTS.
     - `coding-assistant/`: Advanced agent with file ops and memory.

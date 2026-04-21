@@ -2,7 +2,7 @@ import os
 import sys
 import types
 
-from fury import Agent, HistoryManager
+from fury import Agent, HistoryManager, TextToSpeech
 from fury.utils.console import silence_console_output
 
 
@@ -94,6 +94,55 @@ def test_agent_speak_suppresses_reference_audio_prewarm_output(monkeypatch, capf
     )
 
     list(agent.speak(text="hello", ref_text="ref", ref_audio_path="ref.wav"))
+    captured = capfd.readouterr()
+
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_text_to_speech_suppresses_tts_load_output(monkeypatch, capfd):
+    class FakeNeuTTSMinimal:
+        def __init__(self, **_kwargs):
+            print("Loading phonemizer...")
+            os.write(2, b"ggml_metal_init: noisy backend output\n")
+
+        def infer_stream(self, **_kwargs):
+            return iter(())
+
+    neutts_module = types.ModuleType("fury.utils.neutts_minimal")
+    neutts_module.NeuTTSMinimal = FakeNeuTTSMinimal
+    monkeypatch.delitem(sys.modules, "fury.neutts_minimal", raising=False)
+    monkeypatch.setitem(sys.modules, "fury.utils.neutts_minimal", neutts_module)
+
+    tts = TextToSpeech(prewarm=False, suppress_logs=True)
+
+    list(tts.speak(text="hello", ref_text="ref", ref_audio_path="ref.wav"))
+    captured = capfd.readouterr()
+
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_text_to_speech_suppresses_reference_audio_prewarm_output(monkeypatch, capfd):
+    class FakeNeuTTSMinimal:
+        def __init__(self, **_kwargs):
+            pass
+
+        def prepare_reference_audio(self, _ref_audio_path):
+            print("Loading weights")
+            os.write(2, b"weight_norm future warning\n")
+
+        def infer_stream(self, **_kwargs):
+            return iter(())
+
+    neutts_module = types.ModuleType("fury.utils.neutts_minimal")
+    neutts_module.NeuTTSMinimal = FakeNeuTTSMinimal
+    monkeypatch.delitem(sys.modules, "fury.neutts_minimal", raising=False)
+    monkeypatch.setitem(sys.modules, "fury.utils.neutts_minimal", neutts_module)
+
+    tts = TextToSpeech(prewarm=False, suppress_logs=True)
+
+    list(tts.speak(text="hello", ref_text="ref", ref_audio_path="ref.wav"))
     captured = capfd.readouterr()
 
     assert captured.out == ""

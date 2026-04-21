@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from fury import Agent
+from fury import TextToSpeech
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -25,12 +25,8 @@ def write_wav(path: str, audio: np.ndarray, sample_rate: int = 24000) -> None:
 
 
 def main() -> None:
-
-    agent = Agent(
-        model="unsloth/Qwen3.5-4B-GGUF:Q4_K_M",
-        system_prompt="You are a helpful assistant.",
-    )
-    audio_chunks = agent.speak(
+    tts = TextToSpeech()
+    audio_chunks = tts.speak(
         text="Welcome to Fury. The last Agent SDK you will ever need, sir.",
         ref_text="Welcome home sir.",
         ref_audio_path=str(REF_AUDIO_PATH),
