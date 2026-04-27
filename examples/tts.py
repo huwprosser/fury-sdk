@@ -9,7 +9,6 @@ import numpy as np
 
 from fury import TextToSpeech
 
-
 BASE_DIR = Path(__file__).resolve().parent
 REF_AUDIO_PATH = BASE_DIR / "resources" / "ref.wav"
 OUTPUT_PATH = BASE_DIR / "output.wav"

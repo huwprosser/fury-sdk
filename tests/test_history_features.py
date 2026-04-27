@@ -7,8 +7,19 @@ import types
 from pathlib import Path
 
 import pytest
+from conftest import (
+    FakeCompletion as StreamFakeCompletion,
+    FakeDelta,
+    SequencedCreate,
+    make_fake_client,
+)
 
 from fury import Agent, HistoryManager, StaticHistoryManager
+from fury.historymanager import (
+    HISTORY_ACTIVE_VARIANT_ID_KEY,
+    HISTORY_MESSAGE_ID_KEY,
+    HISTORY_MESSAGE_VARIANTS_KEY,
+)
 from fury.multimodal import IMAGE_HISTORY_PLACEHOLDER, materialize_history_message
 
 
@@ -31,6 +42,17 @@ class FakeChatCompletions:
 class FakeClient:
     def __init__(self, contents):
         self.chat = type("Chat", (), {"completions": FakeChatCompletions(contents)})()
+
+
+def strip_history_ids(history):
+    return [
+        {
+            key: value
+            for key, value in message.items()
+            if key != HISTORY_MESSAGE_ID_KEY
+        }
+        for message in history
+    ]
 
 
 def test_history_manager_auto_compacts_when_context_threshold_exceeded():
@@ -139,6 +161,7 @@ def test_history_manager_persists_raw_messages_to_jsonl():
             for line in manager.history_path.read_text(encoding="utf-8").splitlines()
         ]
         assert persisted == manager.history
+        assert all(message[HISTORY_MESSAGE_ID_KEY] for message in persisted)
 
 
 def test_history_manager_loads_persisted_history_on_init():
@@ -159,9 +182,12 @@ def test_history_manager_loads_persisted_history_on_init():
             history_root=tmpdir,
         )
 
-        assert second.history == [
+        assert strip_history_ids(second.history) == [
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "world"},
+        ]
+        assert [message[HISTORY_MESSAGE_ID_KEY] for message in second.history] == [
+            message[HISTORY_MESSAGE_ID_KEY] for message in first.history
         ]
 
 
@@ -180,7 +206,211 @@ def test_history_manager_persists_direct_history_appends():
             json.loads(line)
             for line in manager.history_path.read_text(encoding="utf-8").splitlines()
         ]
-        assert persisted == [{"role": "assistant", "content": "partial reply"}]
+        assert strip_history_ids(persisted) == [
+            {"role": "assistant", "content": "partial reply"}
+        ]
+        assert persisted[0][HISTORY_MESSAGE_ID_KEY]
+
+
+def test_history_manager_rewrites_missing_ids_when_loading_persisted_history():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        first = HistoryManager(
+            auto_compact=False,
+            persist_to_disk=True,
+            session_id="session-123",
+            history_root=tmpdir,
+        )
+        assert first.history_path is not None
+        first.history_path.parent.mkdir(parents=True, exist_ok=True)
+        first.history_path.write_text(
+            json.dumps({"role": "user", "content": "legacy"}) + "\n",
+            encoding="utf-8",
+        )
+
+        manager = HistoryManager(
+            auto_compact=False,
+            persist_to_disk=True,
+            session_id="session-123",
+            history_root=tmpdir,
+        )
+
+        assert manager.history[0][HISTORY_MESSAGE_ID_KEY]
+        persisted = [
+            json.loads(line)
+            for line in manager.history_path.read_text(encoding="utf-8").splitlines()
+        ]
+        assert persisted == manager.history
+
+
+def test_history_manager_migrates_legacy_fury_ids_when_loading_persisted_history():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        first = HistoryManager(
+            auto_compact=False,
+            persist_to_disk=True,
+            session_id="session-123",
+            history_root=tmpdir,
+        )
+        assert first.history_path is not None
+        first.history_path.parent.mkdir(parents=True, exist_ok=True)
+        first.history_path.write_text(
+            json.dumps(
+                {"role": "user", "content": "legacy", "_fury_id": "legacy-id"}
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        manager = HistoryManager(
+            auto_compact=False,
+            persist_to_disk=True,
+            session_id="session-123",
+            history_root=tmpdir,
+        )
+
+        assert manager.history[0][HISTORY_MESSAGE_ID_KEY] == "legacy-id"
+        assert "_fury_id" not in manager.history[0]
+        persisted = [
+            json.loads(line)
+            for line in manager.history_path.read_text(encoding="utf-8").splitlines()
+        ]
+        assert persisted == manager.history
+
+
+def test_history_manager_edits_message_by_id_and_rewrites_persisted_history():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        manager = HistoryManager(
+            auto_compact=False,
+            persist_to_disk=True,
+            session_id="session-123",
+            history_root=tmpdir,
+        )
+        asyncio.run(manager.add({"role": "user", "content": "hello"}))
+        message_id = manager.history[0][HISTORY_MESSAGE_ID_KEY]
+
+        manager.edit_message(message_id, {"role": "user", "content": "edited"})
+
+        assert manager.history == [
+            {"role": "user", "content": "edited", HISTORY_MESSAGE_ID_KEY: message_id}
+        ]
+        persisted = [
+            json.loads(line)
+            for line in manager.history_path.read_text(encoding="utf-8").splitlines()
+        ]
+        assert persisted == manager.history
+
+
+def test_history_manager_regenerates_message_as_active_variant():
+    create = SequencedCreate(
+        [StreamFakeCompletion([FakeDelta(content="new"), FakeDelta(content=" answer")])]
+    )
+    agent = Agent(
+        model="test-model",
+        system_prompt="You are helpful.",
+        disable_stt=True,
+        suppress_logs=True,
+    )
+    agent.client = make_fake_client(create)
+    manager = HistoryManager(agent=agent, auto_compact=False)
+    asyncio.run(
+        manager.extend(
+            [
+                {"role": "user", "content": "question"},
+                {"role": "assistant", "content": "old answer"},
+            ]
+        )
+    )
+    message_id = manager.history[1][HISTORY_MESSAGE_ID_KEY]
+
+    asyncio.run(manager.regenerate_message(message_id))
+
+    message = manager.history[1]
+    variants = message[HISTORY_MESSAGE_VARIANTS_KEY]
+    assert message["content"] == "new answer"
+    assert message[HISTORY_ACTIVE_VARIANT_ID_KEY] == variants[1]["id"]
+    assert [variant["message"]["content"] for variant in variants] == [
+        "old answer",
+        "new answer",
+    ]
+    assert create.calls[0]["messages"][-1] == {
+        "role": "user",
+        "content": "question",
+    }
+    assert all(HISTORY_MESSAGE_ID_KEY not in msg for msg in create.calls[0]["messages"])
+
+
+def test_history_manager_set_variant_swaps_active_message_content():
+    create = SequencedCreate(
+        [StreamFakeCompletion([FakeDelta(content="new answer")])]
+    )
+    agent = Agent(
+        model="test-model",
+        system_prompt="You are helpful.",
+        disable_stt=True,
+        suppress_logs=True,
+    )
+    agent.client = make_fake_client(create)
+    manager = HistoryManager(agent=agent, auto_compact=False)
+    asyncio.run(
+        manager.extend(
+            [
+                {"role": "user", "content": "question"},
+                {"role": "assistant", "content": "old answer"},
+            ]
+        )
+    )
+    message_id = manager.history[1][HISTORY_MESSAGE_ID_KEY]
+    asyncio.run(manager.regenerate_message(message_id))
+    original_variant_id = manager.history[1][HISTORY_MESSAGE_VARIANTS_KEY][0]["id"]
+
+    manager.set_variant(message_id, original_variant_id)
+
+    assert manager.history[1]["content"] == "old answer"
+    assert manager.history[1][HISTORY_ACTIVE_VARIANT_ID_KEY] == original_variant_id
+
+
+def test_history_manager_regenerate_requires_assistant_message():
+    agent = Agent(
+        model="test-model",
+        system_prompt="You are helpful.",
+        disable_stt=True,
+        suppress_logs=True,
+    )
+    manager = HistoryManager(agent=agent, auto_compact=False)
+    asyncio.run(manager.add({"role": "user", "content": "question"}))
+    message_id = manager.history[0][HISTORY_MESSAGE_ID_KEY]
+
+    with pytest.raises(ValueError, match="Only assistant messages"):
+        asyncio.run(manager.regenerate_message(message_id))
+
+
+def test_history_manager_delete_message_by_id_and_rewrites_persisted_history():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        manager = HistoryManager(
+            auto_compact=False,
+            persist_to_disk=True,
+            session_id="session-123",
+            history_root=tmpdir,
+        )
+        asyncio.run(
+            manager.extend(
+                [
+                    {"role": "user", "content": "first"},
+                    {"role": "assistant", "content": "second"},
+                ]
+            )
+        )
+        first_id = manager.history[0][HISTORY_MESSAGE_ID_KEY]
+
+        manager.delete_message(first_id)
+
+        assert strip_history_ids(manager.history) == [
+            {"role": "assistant", "content": "second"}
+        ]
+        persisted = [
+            json.loads(line)
+            for line in manager.history_path.read_text(encoding="utf-8").splitlines()
+        ]
+        assert persisted == manager.history
 
 
 def test_history_manager_compacts_loaded_history_before_first_new_message():
@@ -219,14 +449,16 @@ def test_history_manager_compacts_loaded_history_before_first_new_message():
 
         assert manager.history[0]["role"] == "system"
         assert manager.history[0]["content"].startswith("Summary:")
-        assert manager.history[-1] == {"role": "user", "content": "fresh message"}
+        assert manager.history[-1]["role"] == "user"
+        assert manager.history[-1]["content"] == "fresh message"
         persisted = [
             json.loads(line)
             for line in manager.history_path.read_text(encoding="utf-8").splitlines()
         ]
         assert len(persisted) == 13
         assert all(message["role"] != "system" for message in persisted)
-        assert persisted[-1] == {"role": "user", "content": "fresh message"}
+        assert persisted[-1]["role"] == "user"
+        assert persisted[-1]["content"] == "fresh message"
 
 
 def test_history_manager_prints_notice_when_auto_compacting(capfd):
@@ -378,7 +610,7 @@ def test_static_history_manager_keeps_latest_messages_within_token_budget():
 
     asyncio.run(manager.add({"role": "user", "content": "c" * 16}))
 
-    assert manager.history == [
+    assert strip_history_ids(manager.history) == [
         {"role": "assistant", "content": "b" * 16},
         {"role": "user", "content": "c" * 16},
     ]
@@ -405,6 +637,15 @@ def test_history_manager_add_image_stores_placeholder_by_default():
     assert materialized["content"][1]["image_url"]["url"].startswith(
         "data:image/jpeg;base64,"
     )
+
+
+def test_materialized_history_message_strips_internal_history_id():
+    manager = HistoryManager(auto_compact=False)
+    asyncio.run(manager.add({"role": "user", "content": "hello"}))
+
+    materialized = materialize_history_message(manager.history[0])
+
+    assert materialized == {"role": "user", "content": "hello"}
 
 
 def test_history_manager_add_image_saves_raw_image_when_enabled():
@@ -531,7 +772,8 @@ def test_history_manager_add_voice_appends_transcribed_user_message(monkeypatch)
 
     history = asyncio.run(manager.add_voice(base64.b64encode(b"fake").decode("utf-8")))
 
-    assert history[-1] == {"role": "user", "content": "hello"}
+    assert history[-1]["role"] == "user"
+    assert history[-1]["content"] == "hello"
 
 
 def test_history_manager_add_voice_raises_when_stt_disabled():

@@ -3,6 +3,7 @@ import json
 import os
 import re
 import tempfile
+import uuid
 from pathlib import Path
 from threading import RLock
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -48,6 +49,10 @@ DEFAULT_SUMMARY_SYSTEM_PROMPT = (
     "Be concise but include key decisions, filenames, commands, and TODOs."
 )
 DEFAULT_HISTORY_ROOT = ".fury/history"
+HISTORY_MESSAGE_ID_KEY = "id"
+HISTORY_MESSAGE_VARIANTS_KEY = "variants"
+HISTORY_ACTIVE_VARIANT_ID_KEY = "active_variant_id"
+_LEGACY_HISTORY_MESSAGE_ID_KEY = "_fury_id"
 
 
 def _looks_like_agent(value: Any) -> bool:
@@ -69,14 +74,12 @@ class _ManagedHistory(list):
         self._owner = owner
 
     def append(self, message: Dict[str, Any]) -> None:
-        self._owner._validate_message(message)
-        self._owner._append_persisted_messages([message])
-        super().append(message)
+        prepared = self._owner._prepare_message(message)
+        self._owner._append_persisted_messages([prepared])
+        super().append(prepared)
 
     def extend(self, messages: List[Dict[str, Any]]) -> None:
-        pending = list(messages)
-        for message in pending:
-            self._owner._validate_message(message)
+        pending = [self._owner._prepare_message(message) for message in messages]
         self._owner._append_persisted_messages(pending)
         super().extend(pending)
 
@@ -144,7 +147,14 @@ class HistoryManager:
             self.history_path = self._path_for_session(self.session_id)
             loaded_history = self._load_persisted_history()
             if loaded_history:
+                needs_id_rewrite = any(
+                    not str(message.get(HISTORY_MESSAGE_ID_KEY, "")).strip()
+                    or _LEGACY_HISTORY_MESSAGE_ID_KEY in message
+                    for message in loaded_history
+                )
                 self._set_history(loaded_history)
+                if needs_id_rewrite:
+                    self._rewrite_persisted_history(list(self.history))
                 self._needs_load_compaction = self.auto_compact
             else:
                 self._set_history(initial_history)
@@ -203,11 +213,169 @@ class HistoryManager:
         percent = (tokens / self.context_window) * 100 if self.context_window else 0.0
         return tokens, percent
 
+    def edit_message(
+        self,
+        message_id: str,
+        message: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Replace a history message by stable ID."""
+        index = self._find_message_index(message_id)
+        updated = dict(message)
+        updated[HISTORY_MESSAGE_ID_KEY] = message_id
+        self._validate_message(updated)
+        self.history[index] = updated
+        self._rewrite_persisted_history(list(self.history))
+        return self.history
+
+    def delete_message(self, message_id: str) -> List[Dict[str, Any]]:
+        """Delete a history message by stable ID."""
+        index = self._find_message_index(message_id)
+        del self.history[index]
+        self._rewrite_persisted_history(list(self.history))
+        return self.history
+
+    async def regenerate_message(
+        self,
+        message_id: str,
+        *,
+        reasoning: bool = False,
+        prune_unfinished_sentences: bool = False,
+        model: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Regenerate an assistant message and store it as the active variant."""
+        if self.agent is None:
+            raise ValueError(
+                "HistoryManager.regenerate_message() requires an Agent instance."
+            )
+
+        index = self._find_message_index(message_id)
+        current = self.history[index]
+        if current.get("role") != "assistant":
+            raise ValueError("Only assistant messages can be regenerated.")
+
+        response_parts: List[str] = []
+        async for event in self.agent.chat(
+            list(self.history[:index]),
+            reasoning=reasoning,
+            prune_unfinished_sentences=prune_unfinished_sentences,
+            model=model,
+        ):
+            if event.content:
+                response_parts.append(event.content)
+
+        self._add_message_variant(
+            index,
+            {"role": "assistant", "content": "".join(response_parts)},
+        )
+        return self.history
+
+    def set_variant(self, message_id: str, variant_id: str) -> List[Dict[str, Any]]:
+        """Select a stored variant as the active version of a message."""
+        index = self._find_message_index(message_id)
+        message = self.history[index]
+        variants = message.get(HISTORY_MESSAGE_VARIANTS_KEY)
+        if not isinstance(variants, list) or not variants:
+            raise KeyError(f"Message has no variants: {message_id}")
+        normalized_variant_id = str(variant_id).strip()
+        if not normalized_variant_id:
+            raise ValueError("variant_id is required")
+
+        for variant in variants:
+            if variant.get("id") == normalized_variant_id:
+                self._activate_message_variant(index, variant)
+                return self.history
+        raise KeyError(f"Variant not found: {normalized_variant_id}")
+
     def _validate_message(self, message: Dict[str, Any]) -> None:
         validate_message(message)
 
+    def _prepare_message(self, message: Dict[str, Any]) -> Dict[str, Any]:
+        prepared = dict(message)
+        legacy_id = prepared.pop(_LEGACY_HISTORY_MESSAGE_ID_KEY, None)
+        if not str(prepared.get(HISTORY_MESSAGE_ID_KEY, "")).strip() and legacy_id:
+            prepared[HISTORY_MESSAGE_ID_KEY] = legacy_id
+        if not str(prepared.get(HISTORY_MESSAGE_ID_KEY, "")).strip():
+            prepared[HISTORY_MESSAGE_ID_KEY] = uuid.uuid4().hex
+        self._validate_message(prepared)
+        return prepared
+
+    def _find_message_index(self, message_id: str) -> int:
+        normalized_id = str(message_id).strip()
+        if not normalized_id:
+            raise ValueError("message_id is required")
+        for index, message in enumerate(self.history):
+            if message.get(HISTORY_MESSAGE_ID_KEY) == normalized_id:
+                return index
+        raise KeyError(f"Message not found: {normalized_id}")
+
+    def _message_variant_snapshot(self, message: Dict[str, Any]) -> Dict[str, Any]:
+        snapshot = {
+            key: value
+            for key, value in message.items()
+            if key
+            not in {
+                HISTORY_MESSAGE_ID_KEY,
+                HISTORY_MESSAGE_VARIANTS_KEY,
+                HISTORY_ACTIVE_VARIANT_ID_KEY,
+                _LEGACY_HISTORY_MESSAGE_ID_KEY,
+            }
+        }
+        self._validate_message(snapshot)
+        return snapshot
+
+    def _ensure_message_variants(self, message: Dict[str, Any]) -> List[Dict[str, Any]]:
+        variants = message.get(HISTORY_MESSAGE_VARIANTS_KEY)
+        if isinstance(variants, list) and variants:
+            return variants
+
+        variant = {
+            "id": uuid.uuid4().hex,
+            "message": self._message_variant_snapshot(message),
+        }
+        message[HISTORY_MESSAGE_VARIANTS_KEY] = [variant]
+        message[HISTORY_ACTIVE_VARIANT_ID_KEY] = variant["id"]
+        return message[HISTORY_MESSAGE_VARIANTS_KEY]
+
+    def _add_message_variant(
+        self,
+        index: int,
+        message: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        current = self.history[index]
+        if message.get("role") != current.get("role"):
+            raise ValueError("Message variant role must match the original message role.")
+
+        variants = self._ensure_message_variants(current)
+        variant = {
+            "id": uuid.uuid4().hex,
+            "message": self._message_variant_snapshot(message),
+        }
+        variants.append(variant)
+        self._activate_message_variant(index, variant)
+        return variant
+
+    def _activate_message_variant(
+        self,
+        index: int,
+        variant: Dict[str, Any],
+    ) -> None:
+        current = self.history[index]
+        message_id = current[HISTORY_MESSAGE_ID_KEY]
+        variants = self._ensure_message_variants(current)
+        variant_message = dict(variant.get("message") or {})
+        self._validate_message(variant_message)
+        updated = dict(variant_message)
+        updated[HISTORY_MESSAGE_ID_KEY] = message_id
+        updated[HISTORY_MESSAGE_VARIANTS_KEY] = variants
+        updated[HISTORY_ACTIVE_VARIANT_ID_KEY] = variant["id"]
+        self.history[index] = updated
+        self._rewrite_persisted_history(list(self.history))
+
     def _set_history(self, messages: List[Dict[str, Any]]) -> None:
-        self.history = _ManagedHistory(self, messages)
+        self.history = _ManagedHistory(
+            self,
+            [self._prepare_message(message) for message in messages],
+        )
 
     async def _compact_loaded_history_if_needed(self) -> None:
         if not self._needs_load_compaction:
@@ -427,6 +595,15 @@ class StaticHistoryManager(HistoryManager):
 
     def add_nowait(self, message: Dict[str, Any]) -> List[Dict[str, Any]]:
         self.history.append(message)
+        self._set_history(self._fit_to_target(list(self.history)))
+        return self.history
+
+    def edit_message(
+        self,
+        message_id: str,
+        message: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        super().edit_message(message_id, message)
         self._set_history(self._fit_to_target(list(self.history)))
         return self.history
 

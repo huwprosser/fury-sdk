@@ -143,6 +143,10 @@ Stream consumers receive these as `ChatStreamEvent(tool_ui=...)`, separate from 
 
 `Agent` does not automatically manage history. Pass a list of `{role, content}` messages into `chat()` or `ask()`. For auto-compaction, use `HistoryManager` (see `docs/history_manager.md`).
 
+When using `HistoryManager`, each managed message gets a stable `id`. The manager
+also exposes `edit_message()`, `delete_message()`, `regenerate_message()`, and
+`set_variant()` for SDK-managed history editing and response variants.
+
 You can override the configured agent model per request by passing `model="..."` to `Agent.chat()`, `Agent.ask()`, `Agent.ask_async()`, or `Runner.chat()`.
 
 ## Durable Memory

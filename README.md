@@ -132,6 +132,11 @@ stores a `[The user shared an image]` placeholder plus path metadata instead of
 embedding raw base64 in saved history. Set `save_images_to_history=True` to keep
 the full image payload in history.
 
+Managed messages get stable `id` fields. Use `edit_message()`, `delete_message()`,
+`regenerate_message()`, and `set_variant()` to update history and switch between
+regenerated response variants. See [docs/history_manager.md](docs/history_manager.md)
+for details.
+
 If you do not want auto-compaction and a hard history limit, use `StaticHistoryManager`:
 
 ```python

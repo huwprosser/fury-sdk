@@ -17,6 +17,7 @@ from conftest import (
 )
 
 from fury import Agent, HistoryManager, create_tool
+from fury.historymanager import HISTORY_MESSAGE_ID_KEY
 
 
 def collect_chat(agent, history, **kwargs):
@@ -992,7 +993,9 @@ def test_agent_transcribes_voice_message_and_appends_user_text(monkeypatch):
     history_manager = HistoryManager(agent=agent, auto_compact=False)
     history = asyncio.run(history_manager.add_voice("ZmFrZQ=="))
 
-    assert history == [{"role": "user", "content": "transcribed text"}]
+    assert history[0]["role"] == "user"
+    assert history[0]["content"] == "transcribed text"
+    assert history[0][HISTORY_MESSAGE_ID_KEY]
 
 
 def test_agent_speak_raises_when_reference_audio_or_text_missing():

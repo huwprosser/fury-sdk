@@ -6,6 +6,13 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 IMAGE_HISTORY_PLACEHOLDER = "[The user shared an image]"
+INTERNAL_HISTORY_KEYS = {
+    "id",
+    "variants",
+    "active_variant_id",
+    "_fury_id",
+    "_fury_multimodal",
+}
 
 
 def build_image_message(
@@ -58,7 +65,11 @@ def build_image_history_message(
 def materialize_history_message(message: Dict[str, Any]) -> Dict[str, Any]:
     multimodal = message.get("_fury_multimodal")
     if not isinstance(multimodal, dict):
-        return dict(message)
+        return {
+            key: value
+            for key, value in message.items()
+            if key not in INTERNAL_HISTORY_KEYS
+        }
 
     if multimodal.get("kind") == "image_path":
         path = multimodal.get("path")
@@ -69,9 +80,11 @@ def materialize_history_message(message: Dict[str, Any]) -> Dict[str, Any]:
             except OSError:
                 pass
 
-    sanitized = dict(message)
-    sanitized.pop("_fury_multimodal", None)
-    return sanitized
+    return {
+        key: value
+        for key, value in message.items()
+        if key not in INTERNAL_HISTORY_KEYS
+    }
 
 
 def add_image_to_history(

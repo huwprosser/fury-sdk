@@ -62,6 +62,69 @@ If `auto_compact=True`, the reloaded working set is compacted in memory on the
 first async `add()` or `extend()` call.
 When compaction runs, `HistoryManager` prints a short status line by default.
 
+## Message IDs and Variants
+
+`HistoryManager` assigns every managed message a stable `id`. The ID is stored
+with persisted JSONL history and is preserved across reloads, so callers can edit,
+delete, regenerate, or select variants without relying on list indexes.
+
+```python
+await history_manager.add({"role": "user", "content": "Hello"})
+
+message_id = history_manager.history[-1]["id"]
+history_manager.edit_message(
+    message_id,
+    {"role": "user", "content": "Hello, rewritten"},
+)
+history_manager.delete_message(message_id)
+```
+
+Internal history metadata such as `id`, `variants`, and `active_variant_id` is
+removed before messages are sent to the model. Your application can safely use
+those fields in `history_manager.history` without leaking them into provider
+requests.
+
+### Regenerating a Message
+
+`regenerate_message()` reruns `Agent.chat()` for an existing assistant message,
+using the history before that message as context. The regenerated response is
+stored as a new variant, made active, and copied back onto the top-level message
+so `history_manager.history` remains a normal linear chat transcript.
+
+```python
+await history_manager.add({"role": "user", "content": "Explain queues."})
+await history_manager.add({"role": "assistant", "content": "Original answer."})
+
+assistant_id = history_manager.history[-1]["id"]
+
+await history_manager.regenerate_message(assistant_id)
+
+message = history_manager.history[-1]
+print(message["content"])          # active regenerated answer
+print(message["variants"])         # original and regenerated versions
+print(message["active_variant_id"])
+```
+
+`regenerate_message()` requires `HistoryManager(agent=agent, ...)` because it uses
+the bound agent to generate the new response. It currently targets assistant
+messages only.
+
+### Switching Variants
+
+Use `set_variant()` to switch the active version of a message:
+
+```python
+assistant_id = history_manager.history[-1]["id"]
+first_variant_id = history_manager.history[-1]["variants"][0]["id"]
+
+history_manager.set_variant(assistant_id, first_variant_id)
+```
+
+The active variant's message fields are copied to the top-level message while the
+same message `id` and full `variants` list are preserved. This makes it cheap for
+UIs to let users move between generated alternatives without changing downstream
+code that reads the linear history.
+
 ## StaticHistoryManager
 
 `StaticHistoryManager` provides a fixed-size history window with no auto compaction and no summary calls. On initialization and every add/extend operation, it drops older messages until the newest messages fit inside `target_context_length`.
@@ -114,3 +177,7 @@ await history_manager.extend([
     {"role": "assistant", "content": "Hi!"},
 ])
 ```
+
+`edit_message()` and `delete_message()` are preferred over mutating
+`history_manager.history` directly when persistence is enabled, because they
+rewrite the JSONL file atomically after changing the managed list.
