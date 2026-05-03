@@ -393,7 +393,14 @@ def test_agent_streams_tool_ui_events_for_sync_tools_without_exposing_emit_in_sc
 
 def test_agent_streams_tool_ui_events_for_async_tools():
     async def search(query, emit):
-        emit({"id": "phase-1", "title": f"Queued {query}", "type": "other"})
+        emit(
+            {
+                "id": "phase-1",
+                "title": f"Queued {query}",
+                "type": "other",
+                "metadata": {"query": query, "step": 1},
+            }
+        )
         await asyncio.sleep(0)
         emit({"id": "phase-2", "title": f"Fetched {query}", "type": "tool_call"})
         return {"status": "done"}
@@ -435,12 +442,12 @@ def test_agent_streams_tool_ui_events_for_async_tools():
     events = collect_chat(agent, [{"role": "user", "content": "search"}])
 
     assert [
-        (event.tool_ui.id, event.tool_ui.title, event.tool_ui.type)
+        (event.tool_ui.id, event.tool_ui.title, event.tool_ui.type, event.tool_ui.metadata)
         for event in events
         if event.tool_ui
     ] == [
-        ("phase-1", "Queued release notes", "other"),
-        ("phase-2", "Fetched release notes", "tool_call"),
+        ("phase-1", "Queued release notes", "other", {"query": "release notes", "step": 1}),
+        ("phase-2", "Fetched release notes", "tool_call", None),
     ]
     assert any(
         event.tool_call and event.tool_call.result == {"status": "done"}

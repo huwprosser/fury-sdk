@@ -32,7 +32,12 @@ def _normalize_tool_ui_event(payload: Dict[str, Any]) -> ToolUiEvent:
     if event_type not in ("tool_call", "other"):
         raise ValueError("Tool UI event payload type must be 'tool_call' or 'other'")
 
-    return ToolUiEvent(id=event_id, title=title, type=event_type)
+    return ToolUiEvent(
+        id=event_id,
+        title=title,
+        type=event_type,
+        metadata=payload.get("metadata"),
+    )
 
 
 def _normalize_tool_result(result: Any) -> tuple[Any, Optional[Dict[str, Any]]]:

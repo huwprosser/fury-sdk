@@ -31,6 +31,7 @@ class ToolUiEvent:
     id: str
     title: str
     type: Literal["tool_call", "other"]
+    metadata: Any = None
 
 
 @dataclass
