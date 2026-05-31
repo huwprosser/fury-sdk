@@ -151,6 +151,25 @@ class ToolRegistry:
 
         return filtered_args
 
+    def infer_single_argument_name(self, tool_name: str) -> str:
+        if tool_name in self.tool_objects:
+            schema = self.tool_objects[tool_name].input_schema
+            if isinstance(schema, dict):
+                required = schema.get("required")
+                if isinstance(required, list) and len(required) == 1:
+                    name = required[0]
+                    if isinstance(name, str):
+                        return name
+                properties = schema.get("properties")
+                if isinstance(properties, dict) and len(properties) == 1:
+                    return next(iter(properties))
+
+        if tool_name == "python":
+            return "code"
+        if tool_name == "terminal":
+            return "command"
+        return "query"
+
 
 class ToolExecutor:
     def __init__(
@@ -158,8 +177,10 @@ class ToolExecutor:
         registry: ToolRegistry,
         *,
         parallel_tool_calls: bool = True,
+        auto_heal_tool_calls: bool = True,
     ) -> None:
         self.registry = registry
+        self.auto_heal_tool_calls = auto_heal_tool_calls
         if parallel_tool_calls:
             self._register_parallel_tool()
 
@@ -189,8 +210,9 @@ class ToolExecutor:
                 active_history.append(payload)
                 continue
 
+            raw_args = tool_call["function"]["arguments"]
             try:
-                args = json.loads(tool_call["function"]["arguments"])
+                args = self._decode_tool_arguments(fname, raw_args)
             except json.JSONDecodeError as exc:
                 payload, error_msg = _tool_error_payload(
                     call_id,
@@ -418,3 +440,23 @@ class ToolExecutor:
         if inspect.iscoroutinefunction(func):
             return await func(**call_args)
         return await asyncio.to_thread(func, **call_args)
+
+    def _decode_tool_arguments(self, tool_name: str, raw_args: Any) -> Dict[str, Any]:
+        if isinstance(raw_args, dict):
+            return raw_args
+        if not isinstance(raw_args, str):
+            return {}
+
+        try:
+            parsed = json.loads(raw_args)
+        except json.JSONDecodeError:
+            stripped = raw_args.lstrip()
+            if not self.auto_heal_tool_calls or stripped.startswith(("{", "[")):
+                raise
+            return {self.registry.infer_single_argument_name(tool_name): raw_args}
+
+        if isinstance(parsed, dict):
+            return parsed
+        if self.auto_heal_tool_calls:
+            return {self.registry.infer_single_argument_name(tool_name): parsed}
+        return {}

@@ -9,6 +9,12 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Protocol
 import httpx
 
 from .tools import ToolExecutor, ToolRegistry
+from .tool_healing import (
+    TOOL_XML_SIGNALS,
+    has_tool_signal,
+    parse_tool_calls_from_text,
+    strip_tool_markup,
+)
 from .types import ChatStreamEvent
 from .multimodal import materialize_history_message
 from .utils.validation import validate_history
@@ -62,6 +68,7 @@ class GenerationRuntime(Protocol):
     system_prompt: str
     generation_params: Dict[str, Any]
     max_tool_rounds: int
+    auto_heal_tool_calls: bool
     client: Any
 
 
@@ -217,6 +224,10 @@ def _append_tool_call_chunks(
             tc["function"]["arguments"] += tc_chunk.function.arguments
 
 
+def _auto_heal_tool_calls(runtime: GenerationRuntime) -> bool:
+    return bool(getattr(runtime, "auto_heal_tool_calls", True))
+
+
 def _is_expected_stop_exception(
     exc: BaseException, session: GenerationSession
 ) -> bool:
@@ -284,6 +295,10 @@ class GenerationRunner:
                         completion=completion,
                         tool_calls=tool_calls,
                         prune_unfinished_sentences=prune_unfinished_sentences,
+                        auto_heal_tool_calls=(
+                            _auto_heal_tool_calls(self.runtime)
+                            and bool(self.tool_registry.tools)
+                        ),
                     ):
                         if event.content:
                             response_buffer.append(event.content)
@@ -361,9 +376,15 @@ class GenerationRunner:
         completion: Any,
         tool_calls: List[Dict[str, Any]],
         prune_unfinished_sentences: bool,
+        auto_heal_tool_calls: bool,
     ) -> AsyncGenerator[ChatStreamEvent, None]:
         content_buffer = ""
         emitted_length = 0
+        raw_content = ""
+        pending_prefix = ""
+        draining_tool_markup = False
+        streaming_content = not auto_heal_tool_calls
+        max_prefix_chars = max(len(signal) for signal in TOOL_XML_SIGNALS)
 
         async for chunk in completion:
             if not getattr(chunk, "choices", None):
@@ -375,15 +396,54 @@ class GenerationRunner:
             _append_tool_call_chunks(tool_calls, getattr(delta, "tool_calls", None))
 
             reasoning_content = getattr(delta, "reasoning_content", None)
-            if reasoning_content:
+            if reasoning_content and not draining_tool_markup:
                 yield ChatStreamEvent(reasoning=reasoning_content)
                 continue
 
             if not delta.content:
                 continue
 
+            if auto_heal_tool_calls:
+                raw_content += delta.content
+                if tool_calls or draining_tool_markup:
+                    continue
+
+                if not streaming_content:
+                    pending_prefix += delta.content
+                    stripped = pending_prefix.lstrip()
+                    if not stripped:
+                        continue
+                    if any(stripped.startswith(signal) for signal in TOOL_XML_SIGNALS):
+                        draining_tool_markup = True
+                        continue
+                    if (
+                        any(signal.startswith(stripped) for signal in TOOL_XML_SIGNALS)
+                        and len(stripped) <= max_prefix_chars
+                    ):
+                        continue
+
+                    streaming_content = True
+                    delta_content = pending_prefix
+                    pending_prefix = ""
+                else:
+                    candidate = delta.content
+                    signal_positions = [
+                        candidate.find(signal)
+                        for signal in TOOL_XML_SIGNALS
+                        if candidate.find(signal) >= 0
+                    ]
+                    if signal_positions:
+                        candidate = candidate[: min(signal_positions)]
+                        draining_tool_markup = True
+                    delta_content = strip_tool_markup(candidate)
+            else:
+                delta_content = delta.content
+
+            if not delta_content:
+                continue
+
             if prune_unfinished_sentences:
-                content_buffer += delta.content
+                content_buffer += delta_content
                 pruned = _prune_unfinished_sentences(content_buffer)
                 if len(pruned) <= emitted_length:
                     continue
@@ -392,4 +452,21 @@ class GenerationRunner:
                 yield ChatStreamEvent(content=fresh)
                 continue
 
-            yield ChatStreamEvent(content=delta.content)
+            yield ChatStreamEvent(content=delta_content)
+
+        if not auto_heal_tool_calls or tool_calls or not has_tool_signal(raw_content):
+            if auto_heal_tool_calls and pending_prefix and not streaming_content:
+                yield ChatStreamEvent(content=pending_prefix)
+            return
+
+        parsed_tool_calls = parse_tool_calls_from_text(raw_content)
+        if not parsed_tool_calls:
+            if draining_tool_markup:
+                cleaned = strip_tool_markup(raw_content, final=True)
+                if cleaned:
+                    yield ChatStreamEvent(content=cleaned)
+            elif pending_prefix:
+                yield ChatStreamEvent(content=pending_prefix)
+            return
+
+        tool_calls.extend(parsed_tool_calls)

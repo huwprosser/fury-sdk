@@ -305,6 +305,233 @@ def test_agent_executes_single_tool_and_returns_final_answer():
     )
 
 
+def test_agent_heals_xml_tool_call_emitted_as_text_and_returns_final_answer():
+    called = {}
+
+    def add(a, b):
+        called["args"] = (a, b)
+        return {"result": a + b}
+
+    tool = create_tool(
+        "add",
+        "Add two numbers.",
+        add,
+        {
+            "type": "object",
+            "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
+            "required": ["a", "b"],
+        },
+        {"type": "object", "properties": {"result": {"type": "integer"}}},
+    )
+
+    create = SequencedCreate(
+        [
+            FakeCompletion(
+                [
+                    FakeDelta(content="<tool"),
+                    FakeDelta(
+                        content='_call>{"name":"add","arguments":{"a":2,"b":3}}</tool_call>'
+                    ),
+                ]
+            ),
+            FakeCompletion([FakeDelta(content="The sum is 5.")]),
+        ]
+    )
+    agent = Agent(model="test-model", system_prompt="You are helpful.", tools=[tool])
+    agent.client = make_fake_client(create)
+
+    events = collect_chat(agent, [{"role": "user", "content": "add numbers"}])
+
+    assert called["args"] == (2, 3)
+    assert not any(event.content and "<tool_call>" in event.content for event in events)
+    assert any(
+        event.tool_call and event.tool_call.arguments == {"a": 2, "b": 3}
+        for event in events
+    )
+    assert (
+        "".join(event.content for event in events if event.content) == "The sum is 5."
+    )
+
+
+def test_agent_heals_xml_tool_call_without_closing_tag():
+    called = {}
+
+    def lookup(query):
+        called["query"] = query
+        return {"found": query}
+
+    tool = create_tool(
+        "lookup",
+        "Look something up.",
+        lookup,
+        {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        {"type": "object", "properties": {"found": {"type": "string"}}},
+    )
+
+    create = SequencedCreate(
+        [
+            FakeCompletion(
+                [
+                    FakeDelta(
+                        content='<tool_call>{"name":"lookup","arguments":{"query":"north door"}}'
+                    )
+                ]
+            ),
+            FakeCompletion([FakeDelta(content="Found it.")]),
+        ]
+    )
+    agent = Agent(model="test-model", system_prompt="You are helpful.", tools=[tool])
+    agent.client = make_fake_client(create)
+
+    events = collect_chat(agent, [{"role": "user", "content": "lookup"}])
+
+    assert called == {"query": "north door"}
+    assert "".join(event.content for event in events if event.content) == "Found it."
+
+
+def test_agent_heals_xml_function_tool_call_with_hyphenated_parameters():
+    called = {}
+
+    def create_issue(**kwargs):
+        kwargs.pop("emit", None)
+        called.update(kwargs)
+        return "created"
+
+    tool = create_tool(
+        "mcp__srv__create-issue",
+        "Create an issue.",
+        create_issue,
+        {
+            "type": "object",
+            "properties": {
+                "issue-title": {"type": "string"},
+                "repo-name": {"type": "string"},
+            },
+            "required": ["issue-title", "repo-name"],
+        },
+        {"type": "object", "properties": {}},
+    )
+
+    create = SequencedCreate(
+        [
+            FakeCompletion(
+                [
+                    FakeDelta(
+                        content=(
+                            "<function=mcp__srv__create-issue>"
+                            "<parameter=issue-title>Bug report</parameter>"
+                            "<parameter=repo-name>octocat/hello</parameter>"
+                            "</function>"
+                        )
+                    )
+                ]
+            ),
+            FakeCompletion([FakeDelta(content="Created.")]),
+        ]
+    )
+    agent = Agent(model="test-model", system_prompt="You are helpful.", tools=[tool])
+    agent.client = make_fake_client(create)
+
+    events = collect_chat(agent, [{"role": "user", "content": "create issue"}])
+
+    assert called == {"issue-title": "Bug report", "repo-name": "octocat/hello"}
+    assert "".join(event.content for event in events if event.content) == "Created."
+
+
+def test_agent_heals_bare_string_tool_arguments_using_single_argument_schema():
+    called = {}
+
+    def echo(text):
+        called["text"] = text
+        return text
+
+    tool = create_tool(
+        "echo",
+        "Echo text.",
+        echo,
+        {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+        {"type": "object", "properties": {}},
+    )
+
+    create = SequencedCreate(
+        [
+            FakeCompletion(
+                [
+                    FakeDelta(
+                        content='<tool_call>{"name":"echo","arguments":"hello"}</tool_call>'
+                    )
+                ]
+            ),
+            FakeCompletion([FakeDelta(content="Done.")]),
+        ]
+    )
+    agent = Agent(model="test-model", system_prompt="You are helpful.", tools=[tool])
+    agent.client = make_fake_client(create)
+
+    events = collect_chat(agent, [{"role": "user", "content": "echo"}])
+
+    assert called == {"text": "hello"}
+    assert any(
+        event.tool_call and event.tool_call.arguments == {"text": "hello"}
+        for event in events
+    )
+
+
+def test_agent_can_disable_xml_tool_call_healing():
+    called = False
+
+    def add(a, b):
+        nonlocal called
+        called = True
+        return {"result": a + b}
+
+    tool = create_tool(
+        "add",
+        "Add two numbers.",
+        add,
+        {
+            "type": "object",
+            "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
+            "required": ["a", "b"],
+        },
+        {"type": "object", "properties": {"result": {"type": "integer"}}},
+    )
+
+    create = SequencedCreate(
+        [
+            FakeCompletion(
+                [
+                    FakeDelta(
+                        content='<tool_call>{"name":"add","arguments":{"a":2,"b":3}}</tool_call>'
+                    )
+                ]
+            )
+        ]
+    )
+    agent = Agent(
+        model="test-model",
+        system_prompt="You are helpful.",
+        tools=[tool],
+        auto_heal_tool_calls=False,
+    )
+    agent.client = make_fake_client(create)
+
+    events = collect_chat(agent, [{"role": "user", "content": "add numbers"}])
+
+    assert called is False
+    assert "".join(event.content for event in events if event.content) == (
+        '<tool_call>{"name":"add","arguments":{"a":2,"b":3}}</tool_call>'
+    )
+
+
 def test_agent_streams_tool_ui_events_for_sync_tools_without_exposing_emit_in_schema():
     def search(query, emit):
         assert callable(emit)

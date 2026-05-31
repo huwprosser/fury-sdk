@@ -139,6 +139,21 @@ def search(query: str, emit):
 
 Stream consumers receive these as `ChatStreamEvent(tool_ui=...)`, separate from `tool_call` arguments and results.
 
+### Auto-Healing Local Tool Calls
+
+Some local OpenAI-compatible servers stream tool calls as assistant text instead of native `delta.tool_calls`, for example `<tool_call>{"name":"search","arguments":{"query":"..."}}</tool_call>`. Fury parses those XML-style calls, hides the raw markup from streamed content, and dispatches them through the normal tool executor.
+
+This is enabled by default when tools are registered. Disable it with:
+
+```python
+agent = Agent(
+    model="your-model-name",
+    system_prompt="You are a helpful assistant.",
+    tools=[add_tool],
+    auto_heal_tool_calls=False,
+)
+```
+
 ## History Management
 
 `Agent` does not automatically manage history. Pass a list of `{role, content}` messages into `chat()` or `ask()`. For auto-compaction, use `HistoryManager` (see `docs/history_manager.md`).
@@ -195,5 +210,6 @@ Pass `disable_tts=True` to prevent TTS warmup and audio generation for that agen
 - `generation_params`: Additional model parameters (temperature, max_tokens, etc.).
 - `max_tool_rounds`: Maximum tool-call iterations per request.
 - `parallel_tool_calls`: Enable the built-in parallel tool wrapper.
+- `auto_heal_tool_calls`: Parse XML-style tool calls emitted as assistant text by local/OpenAI-compatible models. Defaults to `True`.
 - `disable_stt`: Skip STT warmup and disable `HistoryManager.add_voice()`.
 - `disable_tts`: Skip TTS warmup and disable `Agent.speak()`.

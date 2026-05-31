@@ -62,6 +62,7 @@ class Agent:
     tool_objects: Dict[str, Tool]
     generation_params: Dict[str, Any]
     parallel_tool_calls: bool
+    auto_heal_tool_calls: bool
     client: AsyncOpenAICompatibleClient
     memory_store: Optional[MemoryStore]
     memory_scope: Optional[str]
@@ -80,6 +81,7 @@ class Agent:
         generation_params: Optional[Dict[str, Any]] = None,
         max_tool_rounds: int = 200,
         parallel_tool_calls: bool = False,
+        auto_heal_tool_calls: bool = True,
         client_options: Optional[Dict[str, Any]] = None,
         disable_stt: bool = False,
         disable_tts: bool = False,
@@ -100,6 +102,8 @@ class Agent:
             generation_params: Extra completion parameters such as temperature.
             max_tool_rounds: Maximum number of tool-calling rounds per request.
             parallel_tool_calls: Enable Fury's built-in parallel tool wrapper.
+            auto_heal_tool_calls: Parse and execute XML-style tool calls emitted as
+                assistant text by local/OpenAI-compatible models.
             client_options: Extra keyword arguments passed to the HTTP client.
             disable_stt: Disable speech-to-text warmup and voice transcription.
             disable_tts: Disable text-to-speech warmup and audio generation.
@@ -116,6 +120,7 @@ class Agent:
         self.base_url = base_url
         self.generation_params = generation_params or {}
         self.parallel_tool_calls = parallel_tool_calls
+        self.auto_heal_tool_calls = auto_heal_tool_calls
         self.memory_scope = (
             str(memory_scope).strip() if memory_scope is not None else None
         )
@@ -150,6 +155,7 @@ class Agent:
         self._tool_executor = ToolExecutor(
             self._tool_registry,
             parallel_tool_calls=parallel_tool_calls,
+            auto_heal_tool_calls=auto_heal_tool_calls,
         )
         self.tools = self._tool_registry.tools
         self.available_functions = self._tool_registry.available_functions
