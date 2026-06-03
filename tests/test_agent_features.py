@@ -141,6 +141,40 @@ def test_agent_streams_reasoning_only_when_enabled():
     assert "".join(event.content for event in enabled if event.content) == "answer"
 
 
+def test_agent_splits_think_tag_content_into_reasoning():
+    create = SequencedCreate([
+        FakeCompletion([
+            FakeDelta(content="<thi"),
+            FakeDelta(content="nk>hidden"),
+            FakeDelta(content=" thoughts</think>"),
+            FakeDelta(content="answer"),
+        ])
+    ])
+    agent = Agent(model="test-model", system_prompt="You are helpful.")
+    agent.client = make_fake_client(create)
+
+    events = collect_chat(agent, [{"role": "user", "content": "hello"}], reasoning=True)
+
+    assert "".join(event.reasoning for event in events if event.reasoning) == "hidden thoughts"
+    assert "".join(event.content for event in events if event.content) == "answer"
+
+
+def test_agent_drops_think_tag_content_when_reasoning_disabled():
+    create = SequencedCreate([
+        FakeCompletion([
+            FakeDelta(content="<think>hidden</think>"),
+            FakeDelta(content="answer"),
+        ])
+    ])
+    agent = Agent(model="test-model", system_prompt="You are helpful.")
+    agent.client = make_fake_client(create)
+
+    events = collect_chat(agent, [{"role": "user", "content": "hello"}], reasoning=False)
+
+    assert [event.reasoning for event in events if event.reasoning] == []
+    assert "".join(event.content for event in events if event.content) == "answer"
+
+
 def test_agent_merges_reasoning_disable_into_extra_body_generation_params():
     create = SequencedCreate([FakeCompletion([FakeDelta(content="ok")])])
     generation_params = {

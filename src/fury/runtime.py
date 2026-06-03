@@ -4,7 +4,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, AsyncGenerator, Dict, List, Optional, Protocol
+from typing import Any, AsyncGenerator, Dict, List, Optional, Protocol, Tuple
 
 import httpx
 
@@ -20,6 +20,39 @@ from .multimodal import materialize_history_message
 from .utils.validation import validate_history
 
 logger = logging.getLogger(__name__)
+
+THINK_OPEN = "<think>"
+THINK_CLOSE = "</think>"
+
+
+def _marker_suffix_len(text: str, marker: str) -> int:
+    return max(
+        (i for i in range(1, min(len(text), len(marker) - 1) + 1) if marker.startswith(text[-i:])),
+        default=0,
+    )
+
+
+def _split_think_markup(
+    buffer: str, in_think: bool, chunk: str, *, flush: bool = False
+) -> Tuple[List[Tuple[str, str]], str, bool]:
+    buffer += chunk
+    parts: List[Tuple[str, str]] = []
+    while buffer:
+        marker = THINK_CLOSE if in_think else THINK_OPEN
+        index = buffer.find(marker)
+        if index >= 0:
+            if index:
+                parts.append(("reasoning" if in_think else "content", buffer[:index]))
+            buffer = buffer[index + len(marker) :]
+            in_think = not in_think
+            continue
+        keep = 0 if flush or in_think else _marker_suffix_len(buffer, THINK_OPEN)
+        emit = buffer[:-keep] if keep else buffer
+        if emit:
+            parts.append(("reasoning" if in_think else "content", emit))
+        buffer = buffer[-keep:] if keep else ""
+        break
+    return parts, buffer, in_think
 
 
 @dataclass
@@ -295,6 +328,7 @@ class GenerationRunner:
                         completion=completion,
                         tool_calls=tool_calls,
                         prune_unfinished_sentences=prune_unfinished_sentences,
+                        reasoning=reasoning,
                         auto_heal_tool_calls=(
                             _auto_heal_tool_calls(self.runtime)
                             and bool(self.tool_registry.tools)
@@ -376,6 +410,7 @@ class GenerationRunner:
         completion: Any,
         tool_calls: List[Dict[str, Any]],
         prune_unfinished_sentences: bool,
+        reasoning: bool,
         auto_heal_tool_calls: bool,
     ) -> AsyncGenerator[ChatStreamEvent, None]:
         content_buffer = ""
@@ -385,6 +420,8 @@ class GenerationRunner:
         draining_tool_markup = False
         streaming_content = not auto_heal_tool_calls
         max_prefix_chars = max(len(signal) for signal in TOOL_XML_SIGNALS)
+        think_buffer = ""
+        in_think = False
 
         async for chunk in completion:
             if not getattr(chunk, "choices", None):
@@ -403,56 +440,84 @@ class GenerationRunner:
             if not delta.content:
                 continue
 
-            if auto_heal_tool_calls:
-                raw_content += delta.content
-                if tool_calls or draining_tool_markup:
+            segments, think_buffer, in_think = _split_think_markup(
+                think_buffer, in_think, delta.content
+            )
+            for segment_kind, segment_text in segments:
+                if segment_kind == "reasoning":
+                    if reasoning and segment_text and not draining_tool_markup:
+                        yield ChatStreamEvent(reasoning=segment_text)
                     continue
 
-                if not streaming_content:
-                    pending_prefix += delta.content
-                    stripped = pending_prefix.lstrip()
-                    if not stripped:
-                        continue
-                    if any(stripped.startswith(signal) for signal in TOOL_XML_SIGNALS):
-                        draining_tool_markup = True
-                        continue
-                    if (
-                        any(signal.startswith(stripped) for signal in TOOL_XML_SIGNALS)
-                        and len(stripped) <= max_prefix_chars
-                    ):
+                if auto_heal_tool_calls:
+                    raw_content += segment_text
+                    if tool_calls or draining_tool_markup:
                         continue
 
-                    streaming_content = True
-                    delta_content = pending_prefix
-                    pending_prefix = ""
+                    if not streaming_content:
+                        pending_prefix += segment_text
+                        stripped = pending_prefix.lstrip()
+                        if not stripped:
+                            continue
+                        if any(stripped.startswith(signal) for signal in TOOL_XML_SIGNALS):
+                            draining_tool_markup = True
+                            continue
+                        if (
+                            any(signal.startswith(stripped) for signal in TOOL_XML_SIGNALS)
+                            and len(stripped) <= max_prefix_chars
+                        ):
+                            continue
+
+                        streaming_content = True
+                        delta_content = pending_prefix
+                        pending_prefix = ""
+                    else:
+                        candidate = segment_text
+                        signal_positions = [
+                            candidate.find(signal)
+                            for signal in TOOL_XML_SIGNALS
+                            if candidate.find(signal) >= 0
+                        ]
+                        if signal_positions:
+                            candidate = candidate[: min(signal_positions)]
+                            draining_tool_markup = True
+                        delta_content = strip_tool_markup(candidate)
                 else:
-                    candidate = delta.content
-                    signal_positions = [
-                        candidate.find(signal)
-                        for signal in TOOL_XML_SIGNALS
-                        if candidate.find(signal) >= 0
-                    ]
-                    if signal_positions:
-                        candidate = candidate[: min(signal_positions)]
-                        draining_tool_markup = True
-                    delta_content = strip_tool_markup(candidate)
-            else:
-                delta_content = delta.content
+                    delta_content = segment_text
 
-            if not delta_content:
-                continue
-
-            if prune_unfinished_sentences:
-                content_buffer += delta_content
-                pruned = _prune_unfinished_sentences(content_buffer)
-                if len(pruned) <= emitted_length:
+                if not delta_content:
                     continue
-                fresh = pruned[emitted_length:]
-                emitted_length = len(pruned)
-                yield ChatStreamEvent(content=fresh)
-                continue
 
-            yield ChatStreamEvent(content=delta_content)
+                if prune_unfinished_sentences:
+                    content_buffer += delta_content
+                    pruned = _prune_unfinished_sentences(content_buffer)
+                    if len(pruned) <= emitted_length:
+                        continue
+                    fresh = pruned[emitted_length:]
+                    emitted_length = len(pruned)
+                    yield ChatStreamEvent(content=fresh)
+                    continue
+
+                yield ChatStreamEvent(content=delta_content)
+
+        segments, think_buffer, in_think = _split_think_markup(
+            think_buffer, in_think, "", flush=True
+        )
+        for segment_kind, segment_text in segments:
+            if segment_kind == "reasoning":
+                if reasoning and segment_text and not draining_tool_markup:
+                    yield ChatStreamEvent(reasoning=segment_text)
+                continue
+            if segment_text:
+                if prune_unfinished_sentences:
+                    content_buffer += segment_text
+                    pruned = _prune_unfinished_sentences(content_buffer)
+                    if len(pruned) > emitted_length:
+                        fresh = pruned[emitted_length:]
+                        emitted_length = len(pruned)
+                        yield ChatStreamEvent(content=fresh)
+                else:
+                    yield ChatStreamEvent(content=segment_text)
 
         if not auto_heal_tool_calls or tool_calls or not has_tool_signal(raw_content):
             if auto_heal_tool_calls and pending_prefix and not streaming_content:
