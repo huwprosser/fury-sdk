@@ -15,8 +15,10 @@
 
 A flexible and powerful AI agent library for Python, designed to build agents with tool support, multimodal capabilities, and streaming responses.
 
+[Breaking Change ⚠️] In 0.2.0 the response deltas have changed to allow for easier tool call persistence in downstream apps.
+
 ## Features
-- **[New] Durable Memory**: Persist named memory scopes, bind them to individual agents, and expose an airgapped memory tool.
+- ** Durable Memory**: Persist named memory scopes, bind them to individual agents, and expose an airgapped memory tool.
 - **Interruption and early stopping**: Agents now use the Runner pattern, allowing them to be interrupted or stopped mid-generation.
 - **Tool Support**: Define and register custom tools (functions) that the agent can execute and parallel tool execution support.
 - **Image and Voice inputs**: Support for image and voice inputs, plus standalone speech-to-text via `SpeechToText`.
