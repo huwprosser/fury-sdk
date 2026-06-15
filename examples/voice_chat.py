@@ -75,14 +75,17 @@ async def main() -> None:
 
         print("Assistant:")
         reply = ""
+        transcript = []
         runner = agent.runner()
         async for event in runner.chat(history_manager.history):
             if event.content:
                 reply += event.content
                 print(event.content, end="", flush=True)
+            if event.history_delta:
+                transcript.append(event.history_delta.message)
         print()
 
-        await history_manager.add({"role": "assistant", "content": reply})
+        await history_manager.extend(transcript)
 
         if reply.strip():
             print("Generating TTS audio...")

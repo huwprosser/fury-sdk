@@ -49,31 +49,33 @@ def test_tool_error_handling():
     
     events, active_history = run_test()
     
-    # Should have exactly 2 events:
-    # 1. Tool call with arguments (result=None)
-    # 2. Tool call with result (the error message)
-    assert len(events) == 2, f"Expected 2 events, got {len(events)}"
-    
-    # First event should be the tool call with arguments
-    assert events[0].tool_call is not None
-    assert events[0].tool_call.tool_name == "fail_tool"
-    assert events[0].tool_call.arguments == {}
-    assert events[0].tool_call.result is None
-    
-    # Second event should be the tool call with the error result
-    assert events[1].tool_call is not None
-    assert events[1].tool_call.tool_name == "fail_tool"
-    assert events[1].tool_call.arguments is None
-    assert events[1].tool_call.result is not None
-    assert "Error" in events[1].tool_call.result
-    # Error message format is "Error: <exception message>"
-    assert "This tool always fails" in events[1].tool_call.result
-    
+    tool_events = [event.tool_call for event in events if event.tool_call]
+    history_events = [event.history_delta for event in events if event.history_delta]
+
+    assert len(tool_events) == 2
+    assert tool_events[0].id == "test123"
+    assert tool_events[0].status == "started"
+    assert tool_events[0].tool_name == "fail_tool"
+    assert tool_events[0].arguments == {}
+    assert tool_events[0].result is None
+
+    assert tool_events[1].id == "test123"
+    assert tool_events[1].status == "error"
+    assert tool_events[1].tool_name == "fail_tool"
+    assert tool_events[1].arguments is None
+    assert tool_events[1].result is not None
+    assert "Error" in tool_events[1].result
+    assert "This tool always fails" in tool_events[1].result
+
+    assert len(history_events) == 1
+    assert history_events[0].kind == "tool_result"
+
     # Active history should contain the tool result
     assert len(active_history) == 1
     assert active_history[0]["role"] == "tool"
     assert active_history[0]["name"] == "fail_tool"
-    assert active_history[0]["content"] == events[1].tool_call.result
+    assert active_history[0]["tool_call_id"] == "test123"
+    assert active_history[0]["content"] == tool_events[1].result
 
 
 def test_tool_error_prevents_infinite_loop():

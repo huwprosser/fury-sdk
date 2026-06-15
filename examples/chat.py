@@ -17,15 +17,16 @@ async def main() -> None:
 
         await history_manager.add({"role": "user", "content": user_input})
 
-        buffer = ""
+        transcript = []
 
         runner = agent.runner()
         async for event in runner.chat(history_manager.history):
             if event.content:
-                buffer += event.content
                 print(event.content, end="", flush=True)
+            if event.history_delta:
+                transcript.append(event.history_delta.message)
 
-        await history_manager.add({"role": "assistant", "content": buffer})
+        await history_manager.extend(transcript)
 
 
 if __name__ == "__main__":

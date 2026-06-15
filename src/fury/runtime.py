@@ -15,7 +15,7 @@ from .tool_healing import (
     parse_tool_calls_from_text,
     strip_tool_markup,
 )
-from .types import ChatStreamEvent
+from .types import ChatResult, ChatStreamEvent, HistoryDelta
 from .multimodal import materialize_history_message
 from .utils.validation import validate_history
 
@@ -350,9 +350,25 @@ class GenerationRunner:
                     break
 
                 if not tool_calls:
+                    final_text = "".join(response_buffer)
+                    if final_text:
+                        message = {"role": "assistant", "content": final_text}
+                        yield ChatStreamEvent(
+                            history_delta=HistoryDelta(
+                                kind="assistant_final",
+                                message=message,
+                            )
+                        )
                     return
 
-                active_history.append({"role": "assistant", "tool_calls": tool_calls})
+                message = {"role": "assistant", "tool_calls": tool_calls}
+                active_history.append(message)
+                yield ChatStreamEvent(
+                    history_delta=HistoryDelta(
+                        kind="assistant_tool_calls",
+                        message=message,
+                    )
+                )
                 async for event in self.tool_executor.execute_tool_calls(
                     tool_calls=tool_calls,
                     active_history=active_history,
@@ -377,6 +393,47 @@ class GenerationRunner:
             yield ChatStreamEvent(content=str(exc))
         finally:
             session.finalize(history, "".join(response_buffer))
+
+    async def complete(
+        self,
+        history: List[Dict[str, Any]],
+        reasoning: bool = False,
+        prune_unfinished_sentences: bool = False,
+        model: Optional[str] = None,
+        control: Optional[RunnerControl] = None,
+    ) -> ChatResult:
+        content: List[str] = []
+        reasoning_buffer: List[str] = []
+        transcript: List[Dict[str, Any]] = []
+        tool_events = []
+        ui_events = []
+
+        async for event in self.chat(
+            history=history,
+            reasoning=reasoning,
+            prune_unfinished_sentences=prune_unfinished_sentences,
+            model=model,
+            control=control,
+        ):
+            if event.content:
+                content.append(event.content)
+            if event.reasoning:
+                reasoning_buffer.append(event.reasoning)
+            if event.history_delta:
+                transcript.append(event.history_delta.message)
+            if event.tool_call:
+                tool_events.append(event.tool_call)
+            if event.tool_ui:
+                ui_events.append(event.tool_ui)
+
+        return ChatResult(
+            content="".join(content),
+            reasoning="".join(reasoning_buffer),
+            transcript=transcript,
+            tool_events=tool_events,
+            ui_events=ui_events,
+            interrupted=bool(control and control.interrupted),
+        )
 
     async def ask_async(
         self,

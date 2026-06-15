@@ -633,6 +633,9 @@ def test_agent_streams_tool_ui_events_for_sync_tools_without_exposing_emit_in_sc
         ("search-1", "Searching for latest react version", "tool_call"),
         ("search-1", "Found latest react version", "tool_call"),
     ]
+    stream_events = [
+        event for event in events if event.tool_call or event.tool_ui or event.content
+    ]
     assert [
         "tool_call"
         if event.tool_call and event.tool_call.arguments is not None
@@ -641,7 +644,7 @@ def test_agent_streams_tool_ui_events_for_sync_tools_without_exposing_emit_in_sc
         else "result"
         if event.tool_call and event.tool_call.arguments is None
         else "content"
-        for event in events
+        for event in stream_events
     ] == ["tool_call", "tool_ui", "tool_ui", "result", "content"]
 
     search_schema = next(
@@ -880,9 +883,11 @@ def test_agent_handles_invalid_tool_call_json_gracefully():
 
     events = collect_chat(agent, [{"role": "user", "content": "bad json"}])
 
-    error_messages = [event.content for event in events if event.content]
-    assert "Error decoding arguments for noop" in error_messages[0]
-    assert error_messages[-1] == "Recovered"
+    error_events = [event.tool_call for event in events if event.tool_call]
+    assert error_events[0].id == "call_1"
+    assert error_events[0].status == "error"
+    assert "Error decoding arguments for noop" in error_events[0].result
+    assert "".join(event.content for event in events if event.content) == "Recovered"
 
 
 def test_agent_executes_parallel_tool_wrapper_for_independent_tools():

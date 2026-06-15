@@ -49,6 +49,30 @@ async def main():
 asyncio.run(main())
 ```
 
+## Transcript Persistence
+
+Streaming events have separate fields for UI output (`content`, `reasoning`, `tool_call`, `tool_ui`) and replayable transcript deltas (`history_delta`). Persist `history_delta.message` to store the exact OpenAI-compatible message Fury expects you to replay later.
+
+```python
+transcript = []
+
+async for event in agent.runner().chat(history):
+    if event.content:
+        print(event.content, end="", flush=True)
+    if event.history_delta:
+        transcript.append(event.history_delta.message)
+```
+
+If you do not need streaming, `Runner.complete()` collects everything for you:
+
+```python
+result = await agent.runner().complete(history)
+save_messages(result.transcript)
+print(result.content)
+```
+
+`result.tool_events` contains `ToolCallEvent` objects with `id`, `tool_name`, and `status` (`"started"`, `"completed"`, or `"error"`). `result.ui_events` contains any `ToolUiEvent` emitted by tools.
+
 ## Cancelling Or Interrupting A Generation
 
 Use `agent.runner()` when you want to stream a reply and optionally stop it before completion.

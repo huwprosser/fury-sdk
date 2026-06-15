@@ -15,7 +15,9 @@ from .memory import (
     resolve_memory_scope,
 )
 from .types import (
+    ChatResult,
     ChatStreamEvent,
+    HistoryDelta,
     Tool,
     ToolCallEvent,
     ToolResult,
@@ -27,7 +29,9 @@ from .voice import SpeechToText
 
 __all__ = [
     "Agent",
+    "ChatResult",
     "ChatStreamEvent",
+    "HistoryDelta",
     "HistoryManager",
     "MemoryEntry",
     "MemoryScopeRef",

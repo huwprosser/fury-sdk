@@ -104,9 +104,12 @@ history_manager = HistoryManager(agent=agent)
 await history_manager.add({"role": "user", "content": user_input})
 
 # Use the history like this:
+transcript = []
 runner = agent.runner()
 async for event in runner.chat(history_manager.history):
-    # ...
+    if event.history_delta:
+        transcript.append(event.history_delta.message)
+await history_manager.extend(transcript)
 ```
 
 See [examples/chat.py](examples/chat.py) for a full working example.
@@ -213,6 +216,30 @@ runner = agent.runner()
 async for event in runner.chat(history, reasoning=False):
     ...
 
+```
+
+### Persisting Transcripts
+
+Fury separates UI stream events from model-visible transcript events. Persist `event.history_delta.message` to save the exact OpenAI-compatible messages Fury used for tool calls, tool results, multimodal follow-ups, and final assistant replies.
+
+```python
+transcript = []
+
+async for event in agent.runner().chat(history):
+    if event.content:
+        print(event.content, end="")
+    if event.history_delta:
+        transcript.append(event.history_delta.message)
+
+save_messages(transcript)
+```
+
+For non-streaming collection:
+
+```python
+result = await agent.runner().complete(history)
+save_messages(result.transcript)
+print(result.content)
 ```
 
 ### Defining Tools

@@ -35,11 +35,14 @@ history_manager = HistoryManager(
 
 async def main():
     await history_manager.add({"role": "user", "content": "Hello"})
+    transcript = []
     runner = agent.runner()
     async for event in runner.chat(history_manager.history, reasoning=False):
         if event.content:
             print(event.content, end="", flush=True)
-    await history_manager.add({"role": "assistant", "content": "Hi!"})
+        if event.history_delta:
+            transcript.append(event.history_delta.message)
+    await history_manager.extend(transcript)
 
 asyncio.run(main())
 ```

@@ -70,7 +70,7 @@ async def main() -> None:
 
         await history_manager.add({"role": "user", "content": user_input})
 
-        buffer = ""
+        transcript = []
         last_stream_kind = None
         runner = agent.runner()
         async for event in runner.chat(history_manager.history):
@@ -83,12 +83,14 @@ async def main() -> None:
             if event.content:
                 if last_stream_kind == "tool_ui":
                     last_stream_kind = None
-                buffer += event.content
                 print(event.content, end="", flush=True)
                 last_stream_kind = "chunk"
 
+            if event.history_delta:
+                transcript.append(event.history_delta.message)
+
         print()
-        await history_manager.add({"role": "assistant", "content": buffer})
+        await history_manager.extend(transcript)
 
 
 if __name__ == "__main__":

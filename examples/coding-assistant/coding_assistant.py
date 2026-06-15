@@ -532,7 +532,7 @@ async def main():
             continue
         await history_manager.add({"role": "user", "content": user_input})
 
-        buffer = []
+        transcript = []
         last_stream_kind = None
         runner = agent.runner()
         async for event in runner.chat(history_manager.history, True):
@@ -546,7 +546,6 @@ async def main():
                 if last_stream_kind in {"reasoning", "tool_ui"}:
                     print()
                 last_stream_kind = "chunk"
-                buffer.append(event.content)
                 print(event.content, end="", flush=True)
 
             if event.reasoning:
@@ -555,8 +554,11 @@ async def main():
                 last_stream_kind = "reasoning"
                 cprint(event.reasoning, "grey", end="", flush=True)
 
+            if event.history_delta:
+                transcript.append(event.history_delta.message)
+
         print()
-        await history_manager.add({"role": "assistant", "content": "".join(buffer)})
+        await history_manager.extend(transcript)
 
         context_tokens, context_percent = history_manager.get_context_usage()
         cprint(

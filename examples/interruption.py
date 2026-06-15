@@ -53,6 +53,7 @@ async def main() -> None:
         history.append({"role": "user", "content": user_input})
 
         buffer = ""
+        transcript = []
         runner = agent.runner()
         stop_event = threading.Event()
         hotkey_task = asyncio.create_task(
@@ -64,6 +65,8 @@ async def main() -> None:
                 if event.content:
                     buffer += event.content
                     print(event.content, end="", flush=True)
+                if event.history_delta:
+                    transcript.append(event.history_delta.message)
         finally:
             stop_event.set()
             await hotkey_task
@@ -72,7 +75,7 @@ async def main() -> None:
             print(f"\n{INTERRUPTED_STATUS}")
             continue
 
-        history.append({"role": "assistant", "content": buffer})
+        history.extend(transcript)
         print()
 
 

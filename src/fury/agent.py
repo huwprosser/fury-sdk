@@ -16,6 +16,7 @@ from .runtime import GenerationRunner, RunnerControl
 from .tools import ToolExecutor, ToolRegistry
 from .transport import AsyncOpenAICompatibleClient
 from .types import (
+    ChatResult,
     ChatStreamEvent,
     Tool,
     ToolCallEvent,
@@ -307,6 +308,21 @@ class Runner:
             control=self._control,
         ):
             yield event
+
+    async def complete(
+        self,
+        history: List[Dict[str, Any]],
+        reasoning: bool = False,
+        prune_unfinished_sentences: bool = False,
+        model: Optional[str] = None,
+    ) -> ChatResult:
+        return await self._agent._runner.complete(
+            history=history,
+            reasoning=reasoning,
+            prune_unfinished_sentences=prune_unfinished_sentences,
+            model=model,
+            control=self._control,
+        )
 
     def interrupt(self) -> None:
         self._control.interrupt()

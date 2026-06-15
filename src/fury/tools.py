@@ -6,7 +6,14 @@ import json
 import logging
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 
-from .types import ChatStreamEvent, Tool, ToolCallEvent, ToolResult, ToolUiEvent
+from .types import (
+    ChatStreamEvent,
+    HistoryDelta,
+    Tool,
+    ToolCallEvent,
+    ToolResult,
+    ToolUiEvent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +24,11 @@ def _normalize_tool_name(name: str) -> str:
     return name
 
 
-def _normalize_tool_ui_event(payload: Dict[str, Any]) -> ToolUiEvent:
+def _normalize_tool_ui_event(
+    payload: Dict[str, Any],
+    *,
+    default_tool_call_id: Optional[str] = None,
+) -> ToolUiEvent:
     if not isinstance(payload, dict):
         raise TypeError("Tool UI event payload must be a dict")
 
@@ -32,10 +43,15 @@ def _normalize_tool_ui_event(payload: Dict[str, Any]) -> ToolUiEvent:
     if event_type not in ("tool_call", "other"):
         raise ValueError("Tool UI event payload type must be 'tool_call' or 'other'")
 
+    tool_call_id = payload.get("tool_call_id", default_tool_call_id)
+    if tool_call_id is not None and not isinstance(tool_call_id, str):
+        raise ValueError("Tool UI event payload tool_call_id must be a string")
+
     return ToolUiEvent(
         id=event_id,
         title=title,
         type=event_type,
+        tool_call_id=tool_call_id,
         metadata=payload.get("metadata"),
     )
 
@@ -196,7 +212,6 @@ class ToolExecutor:
 
             fname = tool_call["function"]["name"]
             call_id = tool_call["id"]
-            missing_result = object()
 
             if fname not in self.registry.available_functions:
                 payload, error_msg = _tool_error_payload(
@@ -205,9 +220,21 @@ class ToolExecutor:
                     f"Error: tool '{fname}' is not registered.",
                 )
                 yield ChatStreamEvent(
-                    tool_call=ToolCallEvent(tool_name=fname, result=error_msg)
+                    tool_call=ToolCallEvent(
+                        id=call_id,
+                        tool_name=fname,
+                        status="error",
+                        result=error_msg,
+                    )
                 )
                 active_history.append(payload)
+                yield ChatStreamEvent(
+                    history_delta=HistoryDelta(
+                        kind="tool_result",
+                        message=payload,
+                        metadata={"raw_result": error_msg},
+                    )
+                )
                 continue
 
             raw_args = tool_call["function"]["arguments"]
@@ -219,67 +246,110 @@ class ToolExecutor:
                     fname,
                     f"Error decoding arguments for {fname}: {exc}",
                 )
-                yield ChatStreamEvent(content=error_msg)
+                yield ChatStreamEvent(
+                    tool_call=ToolCallEvent(
+                        id=call_id,
+                        tool_name=fname,
+                        status="error",
+                        result=error_msg,
+                    )
+                )
                 active_history.append(payload)
+                yield ChatStreamEvent(
+                    history_delta=HistoryDelta(
+                        kind="tool_result",
+                        message=payload,
+                        metadata={"raw_result": error_msg},
+                    )
+                )
                 continue
 
             filtered_args = self.registry.filter_args(fname, args)
             yield ChatStreamEvent(
-                tool_call=ToolCallEvent(tool_name=fname, arguments=filtered_args)
+                tool_call=ToolCallEvent(
+                    id=call_id,
+                    tool_name=fname,
+                    status="started",
+                    arguments=filtered_args,
+                )
             )
 
-            result = missing_result
-            tool_error = None
+            final_event: Optional[ToolCallEvent] = None
             try:
-                async for event in self.execute_tool(fname, filtered_args, session=session):
-                    if (
-                        event.tool_call
-                        and event.tool_call.tool_name == fname
-                        and event.tool_call.arguments is None
-                    ):
-                        result = event.tool_call.result
-                    yield event
+                async for event in self.execute_tool(
+                    fname,
+                    filtered_args,
+                    session=session,
+                    tool_call_id=call_id,
+                ):
+                    if event.tool_call and event.tool_call.tool_name == fname:
+                        final_event = event.tool_call
+                    else:
+                        yield event
                     if session and session.stop_requested:
                         return
             except Exception as exc:
-                # Capture the error and yield it as a tool result
-                tool_error = f"Error executing {fname}: {str(exc)}"
-                logger.warning(tool_error)
-            
-            # Check if there was an error during tool execution
-            if tool_error:
-                # Yield the error as a tool result
-                yield ChatStreamEvent(
-                    tool_call=ToolCallEvent(
-                        tool_name=fname, 
-                        result=tool_error
-                    )
+                error_msg = f"Error executing {fname}: {str(exc)}"
+                logger.warning(error_msg)
+                final_event = ToolCallEvent(
+                    id=call_id,
+                    tool_name=fname,
+                    status="error",
+                    result=error_msg,
                 )
-                normalized_result = tool_error
+
+            if final_event is None:
+                normalized_result: Any = None
+                output_schema = None
+            elif final_event.status == "error":
+                normalized_result = final_event.result
+                output_schema = None
+                yield ChatStreamEvent(tool_call=final_event)
             else:
                 normalized_result, output_schema = _normalize_tool_result(
-                    None if result is missing_result else result
+                    final_event.result
+                )
+                yield ChatStreamEvent(
+                    tool_call=ToolCallEvent(
+                        id=call_id,
+                        tool_name=fname,
+                        status="completed",
+                        result=normalized_result,
+                    )
                 )
                 if output_schema:
                     yield ChatStreamEvent(reasoning=f"data_{json.dumps(output_schema)}")
 
             tool_content, vision_message = _format_multimodal_content(normalized_result)
-            active_history.append(
-                {
-                    "tool_call_id": call_id,
-                    "role": "tool",
-                    "name": fname,
-                    "content": tool_content,
-                }
+            payload = {
+                "tool_call_id": call_id,
+                "role": "tool",
+                "name": fname,
+                "content": tool_content,
+            }
+            active_history.append(payload)
+            yield ChatStreamEvent(
+                history_delta=HistoryDelta(
+                    kind="tool_result",
+                    message=payload,
+                    metadata={"raw_result": normalized_result},
+                )
             )
             if vision_message:
                 active_history.append(vision_message)
+                yield ChatStreamEvent(
+                    history_delta=HistoryDelta(
+                        kind="vision_message",
+                        message=vision_message,
+                    )
+                )
 
     async def execute_tool(
         self,
         tool_name: str,
         args: Dict[str, Any],
         session: Optional[Any] = None,
+        tool_call_id: str = "",
     ) -> AsyncGenerator[ChatStreamEvent, None]:
         func = self.registry.available_functions[tool_name]
         queue: asyncio.Queue[Any] = asyncio.Queue()
@@ -287,11 +357,14 @@ class ToolExecutor:
         loop = asyncio.get_running_loop()
 
         def emit(payload: Dict[str, Any]) -> None:
-            event = _normalize_tool_ui_event(payload)
+            event = _normalize_tool_ui_event(
+                payload,
+                default_tool_call_id=tool_call_id or None,
+            )
             loop.call_soon_threadsafe(queue.put_nowait, event)
 
         error_holder = {"error": None}
-        
+
         async def run_tool() -> Any:
             try:
                 return await self._invoke_tool_callable(func, args, emit)
@@ -322,17 +395,25 @@ class ToolExecutor:
                     return
                 raise
 
-            # Check if there was an error
             if error_holder["error"]:
-                # Keep the error format consistent with existing tests
                 error_msg = f"Error: {error_holder['error']}"
                 yield ChatStreamEvent(
-                    tool_call=ToolCallEvent(tool_name=tool_name, result=error_msg)
+                    tool_call=ToolCallEvent(
+                        id=tool_call_id,
+                        tool_name=tool_name,
+                        status="error",
+                        result=error_msg,
+                    )
                 )
-                return  # Don't yield the normal result event
+                return
 
             yield ChatStreamEvent(
-                tool_call=ToolCallEvent(tool_name=tool_name, result=result)
+                tool_call=ToolCallEvent(
+                    id=tool_call_id,
+                    tool_name=tool_name,
+                    status="completed",
+                    result=result,
+                )
             )
         finally:
             if session is not None:
