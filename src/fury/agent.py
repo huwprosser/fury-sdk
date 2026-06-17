@@ -202,6 +202,15 @@ class Agent:
             return None
         return self.memory_store.capture_snapshot(self.memory_scope)
 
+    async def build_system_prompt_async(self) -> str:
+        snapshot = await self.capture_memory_snapshot_async()
+        return compose_prompt_with_memory(self.base_system_prompt, snapshot)
+
+    async def capture_memory_snapshot_async(self) -> Optional[MemorySnapshot]:
+        if self.memory_store is None or self.memory_scope is None:
+            return None
+        return await self.memory_store.capture_snapshot_async(self.memory_scope)
+
     def runner(self) -> "Runner":
         return Runner(self)
 

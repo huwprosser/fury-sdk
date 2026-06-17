@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -171,6 +172,16 @@ class MemoryStore:
                 scope=scope_ref,
                 content=self._render_prompt_block(scope_ref),
             )
+
+    async def capture_snapshot_async(self, scope: str) -> MemorySnapshot:
+        """Async-friendly snapshot used by the agent on the event loop.
+
+        The default implementation offloads the synchronous ``capture_snapshot``
+        to a worker thread, so stores backed by blocking I/O (files, a sync
+        database driver) do not stall the caller's event loop. Stores backed by
+        an async datastore may override this to perform native async I/O.
+        """
+        return await asyncio.to_thread(self.capture_snapshot, scope)
 
     def get_scope(self, scope: str) -> Dict[str, Any]:
         scope_ref = resolve_memory_scope(scope)

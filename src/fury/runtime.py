@@ -112,6 +112,23 @@ def _resolve_system_prompt(runtime: GenerationRuntime) -> str:
     return runtime.system_prompt
 
 
+async def _resolve_system_prompt_async(runtime: GenerationRuntime) -> str:
+    """Resolve the system prompt without blocking the event loop.
+
+    Prefers a runtime-provided ``build_system_prompt_async`` coroutine (e.g. for
+    a memory store backed by async I/O). Otherwise the synchronous resolution -
+    which may read memory from a blocking source - is offloaded to a worker
+    thread so it does not stall the loop.
+    """
+    build_async = getattr(runtime, "build_system_prompt_async", None)
+    if callable(build_async):
+        result = build_async()
+        if asyncio.iscoroutine(result):
+            return await result
+        return result
+    return await asyncio.to_thread(_resolve_system_prompt, runtime)
+
+
 class GenerationSession:
     def __init__(self, control: Optional[RunnerControl]) -> None:
         self.handle = control
@@ -306,7 +323,7 @@ class GenerationRunner:
         try:
             active_history = _prepare_active_history(
                 history,
-                _resolve_system_prompt(self.runtime),
+                await _resolve_system_prompt_async(self.runtime),
             )
             for _ in range(self.runtime.max_tool_rounds):
                 if session.stop_requested:

@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from conftest import FakeCompletion, FakeDelta, SequencedCreate, make_fake_client
@@ -123,3 +125,61 @@ def test_agent_memory_prompt_refreshes_between_turns(tmp_path):
     assert second == "second"
     assert "Remember this fact." not in create.calls[0]["messages"][0]["content"]
     assert "Remember this fact." in create.calls[1]["messages"][0]["content"]
+
+
+def test_capture_snapshot_async_matches_sync(tmp_path):
+    store = MemoryStore(str(tmp_path / ".fury" / "memory"))
+    store.add(scope="my-project", content="Prefers concise replies.")
+
+    sync_snapshot = store.capture_snapshot("my-project")
+    async_snapshot = asyncio.run(store.capture_snapshot_async("my-project"))
+
+    assert async_snapshot.render() == sync_snapshot.render()
+    assert async_snapshot.scope.label == "my-project"
+
+
+def test_build_system_prompt_async_matches_sync(tmp_path):
+    store = MemoryStore(str(tmp_path / ".fury" / "memory"))
+    store.add(scope="project-alpha", content="Use pytest.")
+    agent = Agent(
+        model="test-model",
+        system_prompt="You are helpful.",
+        memory_store=store,
+        memory_scope="project-alpha",
+    )
+
+    sync_prompt = agent.build_system_prompt()
+    async_prompt = asyncio.run(agent.build_system_prompt_async())
+
+    assert async_prompt == sync_prompt
+    assert "Use pytest." in async_prompt
+
+
+def test_chat_uses_native_async_snapshot_override(tmp_path):
+    """A store overriding capture_snapshot_async is used by the live chat path."""
+
+    class AsyncStore(MemoryStore):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.async_calls = 0
+
+        async def capture_snapshot_async(self, scope):
+            self.async_calls += 1
+            return self.capture_snapshot(scope)
+
+    store = AsyncStore(str(tmp_path / ".fury" / "memory"))
+    store.add(scope="project-alpha", content="Use pytest.")
+    create = SequencedCreate([FakeCompletion([FakeDelta(content="ok")])])
+    agent = Agent(
+        model="test-model",
+        system_prompt="You are helpful.",
+        memory_store=store,
+        memory_scope="project-alpha",
+    )
+    agent.client = make_fake_client(create)
+
+    response = agent.ask("Hello", history=[])
+
+    assert response == "ok"
+    assert store.async_calls == 1  # native async snapshot path was exercised
+    assert "Use pytest." in create.calls[0]["messages"][0]["content"]
