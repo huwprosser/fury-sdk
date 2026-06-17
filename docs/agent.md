@@ -10,7 +10,6 @@ The `Agent` class is the core runtime for chatting with an OpenAI-compatible mod
 - **Parallel tool execution** using the built-in `multi_tool_use.parallel` wrapper.
 - **Named durable memory scopes** via `memory_scope=...`.
 - **Multimodal inputs** with helper methods for images and voice messages.
-- **Optional TTS** via `Agent.speak()`.
 
 ## Basic Usage
 
@@ -199,26 +198,12 @@ If you want multiple agents in the same script with airgapped memory, give them 
 For managed histories, prefer:
 
 - `await history_manager.add_image(image_path, text="...")`
-- `await history_manager.add_voice(base64_audio_bytes)`
-
-If you only need transcription and do not want to initialize an `Agent`, use
-`SpeechToText().transcribe(...)` instead.
 
 `Agent` still exposes lower-level helpers for direct list-based history management.
 By default, `HistoryManager.add_image(...)` stores a lightweight placeholder in the
 managed history instead of persisting raw base64 image data. Set
 `HistoryManager(save_images_to_history=True)` if you want the full image payload
 embedded in history.
-
-Pass `disable_stt=True` to skip STT warmup and reject voice transcription for that agent.
-
-## Text-to-Speech
-
-`Agent.speak()` uses the NeuTTS backend to generate audio from text, conditioned on a
-reference clip. If you only need standalone synthesis, use `TextToSpeech().speak(...)`
-instead. See `examples/tts.py` for a complete example.
-
-Pass `disable_tts=True` to prevent TTS warmup and audio generation for that agent.
 
 ## Constructor Arguments
 
@@ -235,5 +220,3 @@ Pass `disable_tts=True` to prevent TTS warmup and audio generation for that agen
 - `max_tool_rounds`: Maximum tool-call iterations per request.
 - `parallel_tool_calls`: Enable the built-in parallel tool wrapper.
 - `auto_heal_tool_calls`: Parse XML-style tool calls emitted as assistant text by local/OpenAI-compatible models. Defaults to `True`.
-- `disable_stt`: Skip STT warmup and disable `HistoryManager.add_voice()`.
-- `disable_tts`: Skip TTS warmup and disable `Agent.speak()`.

@@ -23,7 +23,6 @@ from .types import (
     ToolResult,
     ToolUiEvent,
 )
-from .utils.tts import speak_text
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +52,6 @@ class Agent:
     base_system_prompt: str
     system_prompt: str
     max_tool_rounds: int
-    stt: Optional[Any]
-    tts: Optional[Any]
-    disable_stt: bool
-    disable_tts: bool
     base_url: str
     tools: List[Dict[str, Any]]
     available_functions: Dict[str, Any]
@@ -84,8 +79,6 @@ class Agent:
         parallel_tool_calls: bool = False,
         auto_heal_tool_calls: bool = True,
         client_options: Optional[Dict[str, Any]] = None,
-        disable_stt: bool = False,
-        disable_tts: bool = False,
         suppress_logs: bool = False,
     ) -> None:
         """Initialize an agent.
@@ -106,18 +99,12 @@ class Agent:
             auto_heal_tool_calls: Parse and execute XML-style tool calls emitted as
                 assistant text by local/OpenAI-compatible models.
             client_options: Extra keyword arguments passed to the HTTP client.
-            disable_stt: Disable speech-to-text warmup and voice transcription.
-            disable_tts: Disable text-to-speech warmup and audio generation.
             suppress_logs: Prevent printing the agent summary on initialization.
         """
         self.model = model
         self.base_system_prompt = system_prompt
         self.system_prompt = system_prompt
         self.max_tool_rounds = max_tool_rounds
-        self.stt = None
-        self.tts = None
-        self.disable_stt = disable_stt
-        self.disable_tts = disable_tts
         self.base_url = base_url
         self.generation_params = generation_params or {}
         self.parallel_tool_calls = parallel_tool_calls
@@ -175,23 +162,6 @@ class Agent:
 
         if not suppress_logs:
             self.show_yourself()
-
-    def speak(
-        self,
-        text: str,
-        ref_text: str,
-        ref_audio_path: Optional[str] = None,
-        backbone_path: str = "neuphonic/neutts-nano-q4-gguf",
-        codec_path: str = "neuphonic/neucodec-onnx-decoder",
-    ) -> Any:
-        return speak_text(
-            self,
-            text=text,
-            ref_text=ref_text,
-            ref_audio_path=ref_audio_path,
-            backbone_path=backbone_path,
-            codec_path=codec_path,
-        )
 
     def build_system_prompt(self) -> str:
         snapshot = self.capture_memory_snapshot()

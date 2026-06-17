@@ -21,8 +21,7 @@ A flexible and powerful AI agent library for Python, designed to build agents wi
 - ** Durable Memory**: Persist named memory scopes, bind them to individual agents, and expose an airgapped memory tool.
 - **Interruption and early stopping**: Agents now use the Runner pattern, allowing them to be interrupted or stopped mid-generation.
 - **Tool Support**: Define and register custom tools (functions) that the agent can execute and parallel tool execution support.
-- **Image and Voice inputs**: Support for image and voice inputs, plus standalone speech-to-text via `SpeechToText`.
-- **Text-to-Speech (TTS)**: Generate audio with NeuTTS via standalone `TextToSpeech` or `Agent.speak()`.
+- **Image inputs**: Support for multimodal image inputs.
 - **History Management**: Use `HistoryManager` for auto-compaction support or `StaticHistoryManager` for strict fixed-size context trimming.
 
 
@@ -54,43 +53,6 @@ Other examples:
 - [Chat With Durable Memory](examples/memory_chat.py)
 - [Interruption](examples/interruption.py)
 - [Coding Assistant](examples/coding-assistant)
-- [Voice Chat](examples/voice_chat.py)
-- [Text-to-speech](examples/tts.py)
-
-## Speech-to-Text
-
-If you only need transcription, you do not need to initialize an `Agent`.
-
-```python
-from fury import SpeechToText
-
-stt = SpeechToText()
-
-# Accepts a base64-encoded audio string, bytes, a file-like object, or a path.
-transcript = stt.transcribe("...")
-print(transcript)
-```
-
-`HistoryManager.add_voice(...)` still uses the same Faster Whisper path under the hood,
-but `SpeechToText` exposes it directly for standalone voice workflows.
-
-## Text-to-Speech
-
-If you only need synthesis, you do not need to initialize an `Agent`.
-
-```python
-from fury import TextToSpeech
-
-tts = TextToSpeech()
-audio_chunks = tts.speak(
-    text="Hello from Fury!",
-    ref_text="Welcome home sir.",
-    ref_audio_path="./examples/resources/ref.wav",
-)
-```
-
-`Agent.speak(...)` still uses the same NeuTTS path under the hood, but `TextToSpeech`
-exposes it directly for standalone audio generation.
 
 ## History Management
 Fury makes managing history limits easy by providing simple, built-in history managers. They are just list managers that monitor context utilization and trim or compact your list accordingly.
@@ -205,8 +167,6 @@ agent = Agent(
     model="your-model-name",
     system_prompt="You are a helpful assistant.",
     parallel_tool_calls=False,
-    disable_stt=False,
-    disable_tts=False,
     generation_params={
         "temperature": 0.2,
         "max_tokens": 512,

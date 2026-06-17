@@ -16,7 +16,6 @@ from .utils.history_summary import (
     find_history_cut_index,
 )
 from .utils.validation import validate_message
-from .utils.voice import add_voice_message_to_history, prewarm_transcription_model
 
 if TYPE_CHECKING:
     from .agent import Agent
@@ -128,7 +127,6 @@ class HistoryManager:
         if agent is not None:
             client = client or agent.client
             summary_model = summary_model or agent.model
-            prewarm_transcription_model(agent)
 
         self.client = client
         self.summary_model = summary_model
@@ -197,16 +195,6 @@ class HistoryManager:
                 save_image=self.save_images_to_history,
             )
         )
-
-    async def add_voice(self, base64_audio_bytes: str) -> List[Dict[str, Any]]:
-        if self.agent is None:
-            raise ValueError("HistoryManager.add_voice() requires an Agent instance.")
-        message = add_voice_message_to_history(
-            [],
-            base64_audio_bytes,
-            self.agent,
-        )[0]
-        return await self.add(message)
 
     def get_context_usage(self) -> tuple[int, float]:
         tokens = sum(estimate_message_tokens(msg) for msg in self.history)

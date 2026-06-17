@@ -306,7 +306,6 @@ def test_history_manager_regenerates_message_as_active_variant():
     agent = Agent(
         model="test-model",
         system_prompt="You are helpful.",
-        disable_stt=True,
         suppress_logs=True,
     )
     agent.client = make_fake_client(create)
@@ -345,7 +344,6 @@ def test_history_manager_set_variant_swaps_active_message_content():
     agent = Agent(
         model="test-model",
         system_prompt="You are helpful.",
-        disable_stt=True,
         suppress_logs=True,
     )
     agent.client = make_fake_client(create)
@@ -372,7 +370,6 @@ def test_history_manager_regenerate_requires_assistant_message():
     agent = Agent(
         model="test-model",
         system_prompt="You are helpful.",
-        disable_stt=True,
         suppress_logs=True,
     )
     manager = HistoryManager(agent=agent, auto_compact=False)
@@ -489,7 +486,6 @@ def test_history_manager_suppresses_compaction_notice_with_suppress_logs(capfd):
     agent = Agent(
         model="test-model",
         system_prompt="You are helpful.",
-        disable_stt=True,
         suppress_logs=True,
     )
     agent.client = client
@@ -585,7 +581,6 @@ def test_history_manager_accepts_agent_as_first_positional_argument():
     agent = Agent(
         model="test-model",
         system_prompt="You are helpful.",
-        disable_stt=True,
         suppress_logs=True,
     )
     manager = HistoryManager(agent, auto_compact=False)
@@ -682,107 +677,3 @@ def test_history_manager_persisted_image_history_avoids_base64_by_default():
 
     assert IMAGE_HISTORY_PLACEHOLDER in persisted
     assert "base64," not in persisted
-
-
-def test_history_manager_add_voice_requires_agent():
-    manager = HistoryManager(auto_compact=False)
-
-    try:
-        asyncio.run(manager.add_voice(base64.b64encode(b"fake").decode("utf-8")))
-    except ValueError as exc:
-        assert "requires an Agent instance" in str(exc)
-    else:
-        raise AssertionError("Expected ValueError")
-
-
-def test_history_manager_prewarms_voice_model_when_available(monkeypatch):
-    init_calls = []
-
-    class FakeWhisperModel:
-        pass
-
-    faster_whisper_module = types.ModuleType("faster_whisper")
-    faster_whisper_module.WhisperModel = (
-        lambda name: init_calls.append(name) or FakeWhisperModel()
-    )
-    monkeypatch.setitem(sys.modules, "faster_whisper", faster_whisper_module)
-
-    agent = Agent(model="test-model", system_prompt="You are helpful.")
-
-    assert agent.stt is None
-
-    HistoryManager(agent=agent, auto_compact=False)
-
-    assert isinstance(agent.stt, FakeWhisperModel)
-    assert init_calls == ["base.en"]
-
-
-def test_history_manager_skips_voice_prewarm_when_stt_disabled(monkeypatch):
-    init_calls = []
-
-    class FakeWhisperModel:
-        pass
-
-    faster_whisper_module = types.ModuleType("faster_whisper")
-    faster_whisper_module.WhisperModel = (
-        lambda name: init_calls.append(name) or FakeWhisperModel()
-    )
-    monkeypatch.setitem(sys.modules, "faster_whisper", faster_whisper_module)
-
-    agent = Agent(
-        model="test-model",
-        system_prompt="You are helpful.",
-        disable_stt=True,
-    )
-
-    HistoryManager(agent=agent, auto_compact=False)
-
-    assert agent.stt is None
-    assert init_calls == []
-
-
-def test_history_manager_ignores_transcription_prewarm_failures(monkeypatch):
-    faster_whisper_module = types.ModuleType("faster_whisper")
-    faster_whisper_module.WhisperModel = lambda _name: (_ for _ in ()).throw(
-        RuntimeError("boom")
-    )
-    monkeypatch.setitem(sys.modules, "faster_whisper", faster_whisper_module)
-
-    agent = Agent(model="test-model", system_prompt="You are helpful.")
-
-    manager = HistoryManager(agent=agent, auto_compact=False)
-
-    assert manager.agent is agent
-    assert agent.stt is None
-
-
-def test_history_manager_add_voice_appends_transcribed_user_message(monkeypatch):
-    agent = Agent(model="test-model", system_prompt="You are helpful.")
-    manager = HistoryManager(agent=agent, auto_compact=False)
-
-    class FakeWhisper:
-        def transcribe(self, audio):
-            return [type("Seg", (), {"text": " hello "})()], None
-
-    monkeypatch.setattr(agent, "stt", FakeWhisper())
-
-    audio_module = types.ModuleType("fury.utils.audio")
-    audio_module.load_audio = lambda *_args, **_kwargs: (b"audio", 16000)
-    monkeypatch.setitem(sys.modules, "fury.utils.audio", audio_module)
-
-    history = asyncio.run(manager.add_voice(base64.b64encode(b"fake").decode("utf-8")))
-
-    assert history[-1]["role"] == "user"
-    assert history[-1]["content"] == "hello"
-
-
-def test_history_manager_add_voice_raises_when_stt_disabled():
-    agent = Agent(
-        model="test-model",
-        system_prompt="You are helpful.",
-        disable_stt=True,
-    )
-    manager = HistoryManager(agent=agent, auto_compact=False)
-
-    with pytest.raises(RuntimeError, match="STT is disabled"):
-        asyncio.run(manager.add_voice(base64.b64encode(b"fake").decode("utf-8")))
