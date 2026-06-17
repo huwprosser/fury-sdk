@@ -6,10 +6,9 @@ The `Agent` class is the core runtime for chatting with an OpenAI-compatible mod
 
 - **Streaming chat** via `Runner.chat()`.
 - **Interruptible generation** via `Runner.cancel()` and `Runner.interrupt()`.
-- **Tool calling** through `create_tool()` and registered tools.
+- **Tool calling** through `Tool` objects.
 - **Parallel tool execution** using the built-in `multi_tool_use.parallel` wrapper.
-- **Named durable memory scopes** via `memory_scope=...`.
-- **Multimodal inputs** with helper methods for images and voice messages.
+- **Multimodal inputs** with helper methods for images.
 
 ## Basic Usage
 
@@ -107,10 +106,10 @@ asyncio.run(main())
 
 ## Tool Calling
 
-Tools are defined with `create_tool()` and passed to the agent. The agent filters any extra arguments that the model hallucinates to match the declared input schema.
+Tools are defined as `Tool` objects and passed to the agent. The agent filters any extra arguments that the model hallucinates to match the declared input schema.
 
 ```python
-from fury import Agent, create_tool
+from fury import Agent, Tool
 
 def add(a: int, b: int, emit=None):
     if emit:
@@ -123,8 +122,8 @@ def add(a: int, b: int, emit=None):
         )
     return {"result": a + b}
 
-add_tool = create_tool(
-    id="add",
+add_tool = Tool(
+    name="add",
     description="Add two numbers together",
     execute=add,
     input_schema={
@@ -179,19 +178,9 @@ agent = Agent(
 
 ## History Management
 
-`Agent` does not automatically manage history. Pass a list of `{role, content}` messages into `chat()` or `ask()`. For auto-compaction, use `HistoryManager` (see `docs/history_manager.md`).
-
-When using `HistoryManager`, each managed message gets a stable `id`. The manager
-also exposes `edit_message()`, `delete_message()`, `regenerate_message()`, and
-`set_variant()` for SDK-managed history editing and response variants.
+`Agent` does not automatically manage history. Pass a list of `{role, content}` messages into `chat()` or `ask()`. For simple target-context trimming, use `HistoryManager` (see `docs/history_manager.md`).
 
 You can override the configured agent model per request by passing `model="..."` to `Agent.chat()`, `Agent.ask()`, `Agent.ask_async()`, or `Runner.chat()`.
-
-## Durable Memory
-
-Pass `memory_scope="my-project"` to bind the agent to an explicit durable-memory namespace. Fury will inject the current memory snapshot for that scope into the system prompt on each turn and will register a `memory` tool scoped only to that namespace.
-
-If you want multiple agents in the same script with airgapped memory, give them different `memory_scope` values. To share the same backing directory across agents, pass the same `MemoryStore` instance along with different scope strings.
 
 ## Multimodal Helpers
 
@@ -209,11 +198,7 @@ embedded in history.
 
 - `model`: Model name.
 - `system_prompt`: System instruction string.
-- `tools`: List of `Tool` objects from `create_tool()`.
-- `memory_scope`: Optional durable-memory namespace for this agent.
-- `memory_store`: Optional `MemoryStore` to reuse across agents.
-- `enable_memory_tool`: Register the built-in `memory` tool for the bound scope.
-- `memory_tool_name`: Override the default tool name (`memory`).
+- `tools`: List of `Tool` objects.
 - `base_url`: OpenAI-compatible server URL.
 - `api_key`: API key for the server.
 - `generation_params`: Additional model parameters (temperature, max_tokens, etc.).

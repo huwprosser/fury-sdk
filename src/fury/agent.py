@@ -6,15 +6,9 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from termcolor import cprint
 
-from .memory import (
-    MemorySnapshot,
-    MemoryStore,
-    compose_prompt_with_memory,
-    create_memory_tool,
-)
 from .runtime import GenerationRunner, RunnerControl
 from .tools import ToolExecutor, ToolRegistry
-from .transport import AsyncOpenAICompatibleClient
+from openai import AsyncOpenAI
 from .types import (
     ChatResult,
     ChatStreamEvent,
@@ -27,26 +21,8 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 
-def _get_registered_tool_name(tool: Any) -> Optional[str]:
-    if isinstance(tool, Tool):
-        return tool.name
-    if isinstance(tool, dict):
-        function = tool.get("function")
-        if isinstance(function, dict):
-            name = function.get("name")
-            if isinstance(name, str):
-                return name
-    return None
-
-
 class Agent:
-    """Chat agent with optional tools, multimodal helpers, and durable memory.
-
-    Pass ``memory_scope`` to opt into Fury's named durable-memory system.
-    When enabled, the agent automatically injects that scope's memory snapshot
-    into the system prompt on each turn and registers the built-in ``memory``
-    tool unless disabled.
-    """
+    """Chat agent with optional tools, multimodal helpers, and streaming."""
 
     model: str
     base_system_prompt: str
@@ -59,19 +35,13 @@ class Agent:
     generation_params: Dict[str, Any]
     parallel_tool_calls: bool
     auto_heal_tool_calls: bool
-    client: AsyncOpenAICompatibleClient
-    memory_store: Optional[MemoryStore]
-    memory_scope: Optional[str]
+    client: AsyncOpenAI
 
     def __init__(
         self,
         model: str,
         system_prompt: str,
         tools: Optional[List[Tool]] = None,
-        memory_scope: Optional[str] = None,
-        memory_store: Optional[MemoryStore] = None,
-        enable_memory_tool: bool = True,
-        memory_tool_name: str = "memory",
         base_url: str = "http://127.0.0.1:8080/v1",
         api_key: str = "",
         generation_params: Optional[Dict[str, Any]] = None,
@@ -86,11 +56,7 @@ class Agent:
         Args:
             model: Model name sent to the OpenAI-compatible backend.
             system_prompt: Base system instruction string.
-            tools: Optional list of tools created with ``create_tool()``.
-            memory_scope: Optional durable-memory namespace for this agent.
-            memory_store: Optional store to reuse across multiple agents.
-            enable_memory_tool: Register Fury's built-in scoped ``memory`` tool.
-            memory_tool_name: Override the default built-in memory tool name.
+            tools: Optional list of ``Tool`` objects.
             base_url: OpenAI-compatible server base URL.
             api_key: API key for the backend.
             generation_params: Extra completion parameters such as temperature.
@@ -109,37 +75,9 @@ class Agent:
         self.generation_params = generation_params or {}
         self.parallel_tool_calls = parallel_tool_calls
         self.auto_heal_tool_calls = auto_heal_tool_calls
-        self.memory_scope = (
-            str(memory_scope).strip() if memory_scope is not None else None
-        )
-        self.memory_store = memory_store
         self.suppress_logs = suppress_logs
 
-        if self.memory_scope == "":
-            raise ValueError("memory_scope must be a non-empty string")
-        if self.memory_scope is None and self.memory_store is not None:
-            raise ValueError("memory_scope is required when memory_store is provided")
-        if self.memory_scope is not None and self.memory_store is None:
-            self.memory_store = MemoryStore()
-
-        configured_tools: List[Any] = list(tools or [])
-        if self.memory_scope is not None and enable_memory_tool:
-            if any(
-                _get_registered_tool_name(tool) == memory_tool_name
-                for tool in configured_tools
-            ):
-                raise ValueError(
-                    f"Tool name '{memory_tool_name}' is already registered."
-                )
-            configured_tools.append(
-                create_memory_tool(
-                    self.memory_store,
-                    self.memory_scope,
-                    name=memory_tool_name,
-                )
-            )
-
-        self._tool_registry = ToolRegistry(tools=configured_tools)
+        self._tool_registry = ToolRegistry(tools=list(tools or []))
         self._tool_executor = ToolExecutor(
             self._tool_registry,
             parallel_tool_calls=parallel_tool_calls,
@@ -149,9 +87,9 @@ class Agent:
         self.available_functions = self._tool_registry.available_functions
         self.tool_objects = self._tool_registry.tool_objects
 
-        self.client = AsyncOpenAICompatibleClient(
+        self.client = AsyncOpenAI(
             base_url=base_url,
-            api_key=api_key,
+            api_key=api_key or "EMPTY",
             **(client_options or {}),
         )
         self._runner = GenerationRunner(
@@ -164,22 +102,10 @@ class Agent:
             self.show_yourself()
 
     def build_system_prompt(self) -> str:
-        snapshot = self.capture_memory_snapshot()
-        return compose_prompt_with_memory(self.base_system_prompt, snapshot)
-
-    def capture_memory_snapshot(self) -> Optional[MemorySnapshot]:
-        if self.memory_store is None or self.memory_scope is None:
-            return None
-        return self.memory_store.capture_snapshot(self.memory_scope)
+        return self.base_system_prompt
 
     async def build_system_prompt_async(self) -> str:
-        snapshot = await self.capture_memory_snapshot_async()
-        return compose_prompt_with_memory(self.base_system_prompt, snapshot)
-
-    async def capture_memory_snapshot_async(self) -> Optional[MemorySnapshot]:
-        if self.memory_store is None or self.memory_scope is None:
-            return None
-        return await self.memory_store.capture_snapshot_async(self.memory_scope)
+        return self.base_system_prompt
 
     def runner(self) -> "Runner":
         return Runner(self)

@@ -6,7 +6,7 @@ This example is based on the Pi.dev coding assistant example.
 This example is a semi-vibe-coded clone of the Pi.dev coding assistant example to use the Fury agent library.
 
 It strips away most of Pi's features but does include:
-- Auto-compaction of history.
+- Simple target-context history trimming.
 - AgentSkills system.
 - SOUL.md injection.
 - A handful of useful tools for the agent to use.
@@ -29,7 +29,7 @@ from typing import Any, Callable, Dict, List, Optional
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
-from fury import Agent, HistoryManager, create_tool
+from fury import Agent, HistoryManager, Tool
 
 MAX_LINES = 2000
 MAX_BYTES = 100 * 1024
@@ -493,29 +493,29 @@ async def main():
         model="unsloth/GLM-4.6V-Flash-GGUF:Q8_0",
         system_prompt=build_prompt(),
         tools=[
-            create_tool(
-                id="read",
+            Tool(
+                name="read",
                 description="Read file contents (text or image). Supports offset/limit for text files.",
                 execute=read_tool,
                 input_schema=get_model_schema(ReadInput),
                 output_schema=READ_OUTPUT_SCHEMA,
             ),
-            create_tool(
-                id="bash",
+            Tool(
+                name="bash",
                 description="Execute a bash command in the current working directory.",
                 execute=bash_tool,
                 input_schema=get_model_schema(BashInput),
                 output_schema=BASH_OUTPUT_SCHEMA,
             ),
-            create_tool(
-                id="write",
+            Tool(
+                name="write",
                 description="Write content to a file, creating parent directories if needed.",
                 execute=write_tool,
                 input_schema=get_model_schema(WriteInput),
                 output_schema=WRITE_OUTPUT_SCHEMA,
             ),
-            create_tool(
-                id="edit",
+            Tool(
+                name="edit",
                 description="Replace exact text in a file with new text.",
                 execute=edit_tool,
                 input_schema=get_model_schema(EditInput),
@@ -524,7 +524,7 @@ async def main():
         ],
     )
 
-    history_manager = HistoryManager(agent=agent)
+    history_manager = HistoryManager(target_context_length=32768)
 
     while True:
         user_input = input("> ").strip()

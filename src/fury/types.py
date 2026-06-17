@@ -66,20 +66,3 @@ class ChatResult:
     tool_events: List[ToolCallEvent]
     ui_events: List[ToolUiEvent]
     interrupted: bool = False
-
-
-def create_tool(
-    id: str,
-    description: str,
-    execute: Callable[..., Any],
-    input_schema: Dict[str, Any],
-    output_schema: Dict[str, Any],
-) -> Tool:
-    """Create a Tool instance from the provided metadata and callbacks."""
-    return Tool(
-        name=id,
-        description=description,
-        execute=execute,
-        input_schema=input_schema,
-        output_schema=output_schema,
-    )

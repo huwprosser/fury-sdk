@@ -4,8 +4,8 @@ import sys
 import time
 import types
 
-import httpx
 import numpy as np
+from openai import APIConnectionError
 import pytest
 from conftest import (
     FakeCompletion,
@@ -16,8 +16,7 @@ from conftest import (
     make_fake_client,
 )
 
-from fury import Agent, HistoryManager, create_tool
-from fury.historymanager import HISTORY_MESSAGE_ID_KEY
+from fury import Agent, HistoryManager, Tool
 
 
 def collect_chat(agent, history, **kwargs):
@@ -199,10 +198,7 @@ def test_agent_merges_reasoning_disable_into_extra_body_generation_params():
     )
 
     assert create.calls[0]["temperature"] == 0.2
-    assert create.calls[0]["chat_template_kwargs"] == {
-        "top_level_flag": True,
-        "enable_thinking": False,
-    }
+    assert "chat_template_kwargs" not in create.calls[0]
     assert create.calls[0]["extra_body"] == {
         "top_k": 10,
         "chat_template_kwargs": {
@@ -270,8 +266,8 @@ def test_agent_prunes_unfinished_streamed_sentences_when_requested():
     ]
 
 
-def test_create_tool_uses_input_and_output_schemas():
-    tool = create_tool(
+def test_tool_uses_input_and_output_schemas():
+    tool = Tool(
         "noop",
         "Do nothing.",
         lambda: None,
@@ -290,7 +286,7 @@ def test_agent_executes_single_tool_and_returns_final_answer():
         called["args"] = (a, b)
         return {"result": a + b}
 
-    tool = create_tool(
+    tool = Tool(
         "add",
         "Add two numbers.",
         add,
@@ -346,7 +342,7 @@ def test_agent_heals_xml_tool_call_emitted_as_text_and_returns_final_answer():
         called["args"] = (a, b)
         return {"result": a + b}
 
-    tool = create_tool(
+    tool = Tool(
         "add",
         "Add two numbers.",
         add,
@@ -394,7 +390,7 @@ def test_agent_heals_xml_tool_call_without_closing_tag():
         called["query"] = query
         return {"found": query}
 
-    tool = create_tool(
+    tool = Tool(
         "lookup",
         "Look something up.",
         lookup,
@@ -435,7 +431,7 @@ def test_agent_heals_xml_function_tool_call_with_hyphenated_parameters():
         called.update(kwargs)
         return "created"
 
-    tool = create_tool(
+    tool = Tool(
         "mcp__srv__create-issue",
         "Create an issue.",
         create_issue,
@@ -483,7 +479,7 @@ def test_agent_heals_bare_string_tool_arguments_using_single_argument_schema():
         called["text"] = text
         return text
 
-    tool = create_tool(
+    tool = Tool(
         "echo",
         "Echo text.",
         echo,
@@ -527,7 +523,7 @@ def test_agent_can_disable_xml_tool_call_healing():
         called = True
         return {"result": a + b}
 
-    tool = create_tool(
+    tool = Tool(
         "add",
         "Add two numbers.",
         add,
@@ -586,8 +582,8 @@ def test_agent_streams_tool_ui_events_for_sync_tools_without_exposing_emit_in_sc
         )
         return {"status": "done", "query": query}
 
-    tool = create_tool(
-        id="search",
+    tool = Tool(
+        name="search",
         description="Search for something.",
         execute=search,
         input_schema={
@@ -669,8 +665,8 @@ def test_agent_streams_tool_ui_events_for_async_tools():
         emit({"id": "phase-2", "title": f"Fetched {query}", "type": "tool_call"})
         return {"status": "done"}
 
-    tool = create_tool(
-        id="search_async",
+    tool = Tool(
+        name="search_async",
         description="Search asynchronously.",
         execute=search,
         input_schema={
@@ -726,7 +722,7 @@ def test_agent_filters_hallucinated_tool_arguments():
         observed["text"] = text
         return {"text": text}
 
-    tool = create_tool(
+    tool = Tool(
         "echo",
         "Echo text.",
         echo,
@@ -773,7 +769,7 @@ def test_agent_surfaces_tool_execution_errors_without_crashing_conversation():
     def explode():
         raise RuntimeError("boom")
 
-    tool = create_tool(
+    tool = Tool(
         "explode",
         "Fail on purpose.",
         explode,
@@ -1016,7 +1012,7 @@ def test_chat_interrupt_swallows_expected_transport_error(caplog):
     class InterruptReadErrorCompletion(SlowFakeCompletion):
         async def __anext__(self):
             if self.closed:
-                raise httpx.ReadError("stream closed")
+                raise APIConnectionError(message="stream closed", request=None)
             if self._index > 0:
                 try:
                     await asyncio.wait_for(self._wake.wait(), timeout=self.delay)
@@ -1024,7 +1020,7 @@ def test_chat_interrupt_swallows_expected_transport_error(caplog):
                     pass
                 self._wake.clear()
                 if self.closed:
-                    raise httpx.ReadError("stream closed")
+                    raise APIConnectionError(message="stream closed", request=None)
             return await super(SlowFakeCompletion, self).__anext__()
 
     completion = InterruptReadErrorCompletion(
@@ -1200,7 +1196,7 @@ def test_agent_rejects_nested_parallel_tool_calls():
 
 
 def test_agent_accepts_image_result_from_tool_and_appends_multimodal_followup_message():
-    tool = create_tool(
+    tool = Tool(
         "camera",
         "Capture an image.",
         lambda: {"description": "snapshot", "image_base64": "ZmFrZQ=="},

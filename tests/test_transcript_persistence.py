@@ -2,7 +2,7 @@ import asyncio
 
 from conftest import FakeCompletion, FakeDelta, FakeToolCallChunk, SequencedCreate, make_fake_client
 
-from fury import Agent, create_tool
+from fury import Agent, Tool
 from fury.utils.validation import validate_history
 
 
@@ -22,8 +22,8 @@ def _make_tool_agent():
             emit({"id": "ui-1", "title": "Adding", "type": "tool_call"})
         return a + b
 
-    tool = create_tool(
-        id="add",
+    tool = Tool(
+        name="add",
         description="Add two numbers.",
         execute=add,
         input_schema={

@@ -6,17 +6,17 @@ import re
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Dict, List, Optional, Protocol, Tuple
 
-import httpx
+from openai import APIConnectionError, APITimeoutError
 
-from .tools import ToolExecutor, ToolRegistry
+from .multimodal import materialize_history_message
 from .tool_healing import (
     TOOL_XML_SIGNALS,
     has_tool_signal,
     parse_tool_calls_from_text,
     strip_tool_markup,
 )
+from .tools import ToolExecutor, ToolRegistry
 from .types import ChatResult, ChatStreamEvent, HistoryDelta
-from .multimodal import materialize_history_message
 from .utils.validation import validate_history
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,11 @@ THINK_CLOSE = "</think>"
 
 def _marker_suffix_len(text: str, marker: str) -> int:
     return max(
-        (i for i in range(1, min(len(text), len(marker) - 1) + 1) if marker.startswith(text[-i:])),
+        (
+            i
+            for i in range(1, min(len(text), len(marker) - 1) + 1)
+            if marker.startswith(text[-i:])
+        ),
         default=0,
     )
 
@@ -217,6 +221,63 @@ def _prepare_active_history(
     return active_history
 
 
+OPENAI_CHAT_COMPLETION_KWARGS = {
+    "audio",
+    "extra_body",
+    "extra_headers",
+    "extra_query",
+    "frequency_penalty",
+    "function_call",
+    "functions",
+    "logit_bias",
+    "logprobs",
+    "max_completion_tokens",
+    "max_tokens",
+    "metadata",
+    "modalities",
+    "n",
+    "parallel_tool_calls",
+    "prediction",
+    "presence_penalty",
+    "prompt_cache_key",
+    "reasoning_effort",
+    "response_format",
+    "safety_identifier",
+    "seed",
+    "service_tier",
+    "stop",
+    "store",
+    "stream",
+    "stream_options",
+    "temperature",
+    "timeout",
+    "tool_choice",
+    "tools",
+    "top_logprobs",
+    "top_p",
+    "user",
+    "verbosity",
+    "web_search_options",
+}
+
+
+def _move_unknown_kwargs_to_extra_body(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    normalized: Dict[str, Any] = {}
+    extra_body = dict(kwargs.get("extra_body") or {})
+
+    for key, value in kwargs.items():
+        if key == "extra_body":
+            continue
+        if key in OPENAI_CHAT_COMPLETION_KWARGS or key in {"model", "messages"}:
+            normalized[key] = value
+        else:
+            extra_body[key] = value
+
+    if extra_body:
+        normalized["extra_body"] = extra_body
+    return normalized
+
+
 def _build_chat_completion_kwargs(
     *,
     model: str,
@@ -231,22 +292,21 @@ def _build_chat_completion_kwargs(
     }
     if generation_params:
         kwargs.update(generation_params)
-    chat_template_kwargs = dict(kwargs.get("chat_template_kwargs") or {})
+
+    chat_template_kwargs = dict(kwargs.pop("chat_template_kwargs", {}) or {})
+    extra_body = dict(kwargs.get("extra_body") or {})
+    extra_chat_template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
+    extra_chat_template_kwargs.update(chat_template_kwargs)
     if not reasoning:
-        chat_template_kwargs["enable_thinking"] = False
-    if chat_template_kwargs:
-        kwargs["chat_template_kwargs"] = chat_template_kwargs
-    if not reasoning:
-        extra_body = dict(kwargs.get("extra_body") or {})
-        extra_chat_template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
-        extra_chat_template_kwargs.update(chat_template_kwargs)
         extra_chat_template_kwargs["enable_thinking"] = False
+    if extra_chat_template_kwargs:
         extra_body["chat_template_kwargs"] = extra_chat_template_kwargs
         kwargs["extra_body"] = extra_body
+
     if tools:
         kwargs["tools"] = tools
     kwargs["model"] = model
-    return kwargs
+    return _move_unknown_kwargs_to_extra_body(kwargs)
 
 
 def _append_tool_call_chunks(
@@ -278,9 +338,7 @@ def _auto_heal_tool_calls(runtime: GenerationRuntime) -> bool:
     return bool(getattr(runtime, "auto_heal_tool_calls", True))
 
 
-def _is_expected_stop_exception(
-    exc: BaseException, session: GenerationSession
-) -> bool:
+def _is_expected_stop_exception(exc: BaseException, session: GenerationSession) -> bool:
     if not session.stop_requested:
         return False
 
@@ -288,10 +346,8 @@ def _is_expected_stop_exception(
         exc,
         (
             asyncio.CancelledError,
-            httpx.TimeoutException,
-            httpx.NetworkError,
-            httpx.ReadError,
-            httpx.RemoteProtocolError,
+            APIConnectionError,
+            APITimeoutError,
         ),
     )
 
@@ -506,7 +562,9 @@ class GenerationRunner:
 
             _append_tool_call_chunks(tool_calls, getattr(delta, "tool_calls", None))
 
-            reasoning_content = getattr(delta, "reasoning_content", None)
+            reasoning_content = getattr(delta, "reasoning_content", None) or getattr(
+                delta, "reasoning", None
+            )
             if reasoning_content and not draining_tool_markup:
                 yield ChatStreamEvent(reasoning=reasoning_content)
                 continue
@@ -533,11 +591,16 @@ class GenerationRunner:
                         stripped = pending_prefix.lstrip()
                         if not stripped:
                             continue
-                        if any(stripped.startswith(signal) for signal in TOOL_XML_SIGNALS):
+                        if any(
+                            stripped.startswith(signal) for signal in TOOL_XML_SIGNALS
+                        ):
                             draining_tool_markup = True
                             continue
                         if (
-                            any(signal.startswith(stripped) for signal in TOOL_XML_SIGNALS)
+                            any(
+                                signal.startswith(stripped)
+                                for signal in TOOL_XML_SIGNALS
+                            )
                             and len(stripped) <= max_prefix_chars
                         ):
                             continue
