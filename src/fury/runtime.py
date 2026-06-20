@@ -386,6 +386,7 @@ class GenerationRunner:
                     break
 
                 tool_calls: List[Dict[str, Any]] = []
+                round_content: List[str] = []
                 kwargs = _build_chat_completion_kwargs(
                     model=model if model is not None else self.runtime.model,
                     active_history=active_history,
@@ -409,6 +410,7 @@ class GenerationRunner:
                     ):
                         if event.content:
                             response_buffer.append(event.content)
+                            round_content.append(event.content)
                             session.update_partial_response("".join(response_buffer))
                         yield event
                         if session.stop_requested:
@@ -423,7 +425,11 @@ class GenerationRunner:
                     break
 
                 if not tool_calls:
-                    final_text = "".join(response_buffer)
+                    # Only this round's text: any narration from earlier rounds
+                    # was already persisted on its own assistant_tool_calls
+                    # message below, so joining the whole response_buffer here
+                    # would duplicate it in the final message.
+                    final_text = "".join(round_content)
                     if final_text:
                         message = {"role": "assistant", "content": final_text}
                         yield ChatStreamEvent(
@@ -434,7 +440,18 @@ class GenerationRunner:
                         )
                     return
 
-                message = {"role": "assistant", "tool_calls": tool_calls}
+                # Preserve any narration the model emitted alongside its tool
+                # calls. Without the content key the model only ever sees its
+                # tool calls (not what it said before them) on the next round,
+                # so it re-narrates/re-plans every round — producing repeated
+                # text and runaway tool loops.
+                message: Dict[str, Any] = {
+                    "role": "assistant",
+                    "tool_calls": tool_calls,
+                }
+                round_text = "".join(round_content)
+                if round_text:
+                    message["content"] = round_text
                 active_history.append(message)
                 yield ChatStreamEvent(
                     history_delta=HistoryDelta(

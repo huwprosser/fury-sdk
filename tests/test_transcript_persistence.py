@@ -98,6 +98,70 @@ def test_tool_call_events_include_id_and_status_and_transcript_order():
     validate_history([*history, *(delta.message for delta in deltas)])
 
 
+def _make_narrating_tool_agent():
+    """A tool round where the model narrates *before* emitting the tool call,
+    then gives a final answer in a later round."""
+    tool = Tool(
+        name="add",
+        description="Add two numbers.",
+        execute=lambda a, b, emit=None: a + b,
+        input_schema={
+            "type": "object",
+            "properties": {"a": {"type": "number"}, "b": {"type": "number"}},
+            "required": ["a", "b"],
+        },
+        output_schema={"type": "number"},
+    )
+    create = SequencedCreate(
+        [
+            FakeCompletion(
+                [
+                    FakeDelta(content="Let me add these numbers."),
+                    FakeDelta(
+                        tool_calls=[
+                            FakeToolCallChunk(
+                                0, id="call_1", name="add", arguments='{"a":2,"b":3}'
+                            )
+                        ]
+                    ),
+                ]
+            ),
+            FakeCompletion([FakeDelta(content="The answer is 5.")]),
+        ]
+    )
+    agent = Agent(model="test-model", system_prompt="You are helpful.", tools=[tool])
+    agent.client = make_fake_client(create)
+    return agent
+
+
+def test_narration_before_tool_call_is_preserved_and_not_duplicated():
+    """Regression: text emitted alongside a tool call must stay on that
+    assistant message so the model sees its own narration next round, and must
+    not be re-glued onto the final message. (fury runtime loop fix.)"""
+    agent = _make_narrating_tool_agent()
+    history = [{"role": "user", "content": "add 2 and 3"}]
+
+    events = _collect_chat(agent, history)
+    deltas = [event.history_delta for event in events if event.history_delta]
+
+    assert [delta.kind for delta in deltas] == [
+        "assistant_tool_calls",
+        "tool_result",
+        "assistant_final",
+    ]
+
+    # The narration rides along with the tool call (not dropped)...
+    assert deltas[0].message["role"] == "assistant"
+    assert deltas[0].message["content"] == "Let me add these numbers."
+    assert deltas[0].message["tool_calls"][0]["id"] == "call_1"
+
+    # ...and the final message holds ONLY the final round's text, not the
+    # narration re-glued from earlier rounds.
+    assert deltas[2].message == {"role": "assistant", "content": "The answer is 5."}
+
+    validate_history([*history, *(delta.message for delta in deltas)])
+
+
 def test_runner_complete_collects_content_transcript_tool_and_ui_events():
     async def run():
         agent = _make_tool_agent()
