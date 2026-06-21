@@ -15,15 +15,11 @@
 
 A flexible and powerful AI agent library for Python, designed to build agents with tool support, multimodal capabilities, and streaming responses.
 
-[Breaking Change ⚠️] In 0.2.0 the response deltas have changed to allow for easier tool call persistence in downstream apps.
-
 ## Features
-- ** Durable Memory**: Persist named memory scopes, bind them to individual agents, and expose an airgapped memory tool.
 - **Interruption and early stopping**: Agents now use the Runner pattern, allowing them to be interrupted or stopped mid-generation.
 - **Tool Support**: Define and register custom tools (functions) that the agent can execute and parallel tool execution support.
-- **Image and Voice inputs**: Support for image and voice inputs, plus standalone speech-to-text via `SpeechToText`.
-- **Text-to-Speech (TTS)**: Generate audio with NeuTTS via standalone `TextToSpeech` or `Agent.speak()`.
-- **History Management**: Use `HistoryManager` for auto-compaction support or `StaticHistoryManager` for strict fixed-size context trimming.
+- **Image inputs**: Support for multimodal image inputs.
+- **History Management**: Use `HistoryManager` for simple target-context trimming.
 
 
 ## Installation
@@ -50,62 +46,21 @@ print(agent.ask("Hello!", history=[], model="another-model"))
 
 Other examples:
 - [Basic Chat Loop](examples/chat.py)
-- [Persistent Chat Log](examples/persistent_chat.py)
-- [Chat With Durable Memory](examples/memory_chat.py)
+- [Markdown Memory Tool](examples/memory_chat.py)
+- [History Compaction](examples/history_compaction.py)
 - [Interruption](examples/interruption.py)
 - [Coding Assistant](examples/coding-assistant)
-- [Voice Chat](examples/voice_chat.py)
-- [Text-to-speech](examples/tts.py)
-
-## Speech-to-Text
-
-If you only need transcription, you do not need to initialize an `Agent`.
-
-```python
-from fury import SpeechToText
-
-stt = SpeechToText()
-
-# Accepts a base64-encoded audio string, bytes, a file-like object, or a path.
-transcript = stt.transcribe("...")
-print(transcript)
-```
-
-`HistoryManager.add_voice(...)` still uses the same Faster Whisper path under the hood,
-but `SpeechToText` exposes it directly for standalone voice workflows.
-
-## Text-to-Speech
-
-If you only need synthesis, you do not need to initialize an `Agent`.
-
-```python
-from fury import TextToSpeech
-
-tts = TextToSpeech()
-audio_chunks = tts.speak(
-    text="Hello from Fury!",
-    ref_text="Welcome home sir.",
-    ref_audio_path="./examples/resources/ref.wav",
-)
-```
-
-`Agent.speak(...)` still uses the same NeuTTS path under the hood, but `TextToSpeech`
-exposes it directly for standalone audio generation.
 
 ## History Management
-Fury makes managing history limits easy by providing simple, built-in history managers. They are just list managers that monitor context utilization and trim or compact your list accordingly.
-
-The standard `HistoryManager` will auto-compact your history as you add messages to it (summarise using an Agent) in a similar way to Claude Code, Codex and Pi.
+Fury's `HistoryManager` is intentionally small: it stores a list of OpenAI-compatible JSON message dictionaries and trims old messages to keep the newest context within a target size.
 
 ```python
 from fury import HistoryManager
 
-history_manager = HistoryManager(agent=agent)
+history_manager = HistoryManager(target_context_length=4096)
 
-# Add something to history like this:
 await history_manager.add({"role": "user", "content": user_input})
 
-# Use the history like this:
 transcript = []
 runner = agent.runner()
 async for event in runner.chat(history_manager.history):
@@ -114,89 +69,9 @@ async for event in runner.chat(history_manager.history):
 await history_manager.extend(transcript)
 ```
 
-See [examples/chat.py](examples/chat.py) for a full working example.
+Image messages are supported via `add_image()`. By default Fury stores a lightweight placeholder plus path metadata; set `save_images_to_history=True` to keep the full image payload.
 
-To persist the raw transcript as JSONL and reload it on startup:
-
-```python
-history_manager = HistoryManager(
-    agent,
-    persist_to_disk=True,
-    session_id="demo-session",
-)
-```
-
-This stores the session under `.fury/history/` and rehydrates `history_manager.history`
-from the existing file if the session already exists. See
-[examples/persistent_chat.py](examples/persistent_chat.py) for a runnable example.
-If `auto_compact=True`, a reloaded session is compacted in memory on the first async
-`add()` or `extend()` call, while the JSONL file remains a full raw transcript.
-When compaction runs, Fury prints a short `[history] Compacting ...` notice by default.
-Managed image history is lightweight by default: `HistoryManager.add_image(...)`
-stores a `[The user shared an image]` placeholder plus path metadata instead of
-embedding raw base64 in saved history. Set `save_images_to_history=True` to keep
-the full image payload in history.
-
-Managed messages get stable `id` fields. Use `edit_message()`, `delete_message()`,
-`regenerate_message()`, and `set_variant()` to update history and switch between
-regenerated response variants. See [docs/history_manager.md](docs/history_manager.md)
-for details.
-
-If you do not want auto-compaction and a hard history limit, use `StaticHistoryManager`:
-
-```python
-from fury import StaticHistoryManager
-
-history_manager = StaticHistoryManager(
-    target_context_length=4096,
-    history=[{"role": "system", "content": "You are helpful."}],
-)
-```
-
-It keeps only the newest messages that fit in the target context length.
-See [docs/example.md](docs/example.md) for a complete example.
-
-## Durable Memory
-
-Fury can persist durable memory outside the current chat history using explicit named scopes. Pass `memory_scope` when constructing an agent and Fury will:
-
-- create or reuse a `MemoryStore`
-- inject the latest memory snapshot for that scope into the system prompt
-- register a `memory` tool bound only to that scope
-
-```python
-from fury import Agent
-
-agent = Agent(
-    model="your-model-name",
-    system_prompt="You are a helpful assistant.",
-    memory_scope="my-project",
-)
-```
-
-To share one backing store across multiple airgapped agents:
-
-```python
-from fury import Agent, MemoryStore
-
-store = MemoryStore(".fury/memory")
-
-alpha = Agent(
-    model="your-model-name",
-    system_prompt="You help project alpha.",
-    memory_store=store,
-    memory_scope="project-alpha",
-)
-
-beta = Agent(
-    model="your-model-name",
-    system_prompt="You help project beta.",
-    memory_store=store,
-    memory_scope="project-beta",
-)
-```
-
-See [docs/memory.md](docs/memory.md) for the full API.
+See [docs/history_manager.md](docs/history_manager.md).
 
 ### Configuration Options
 
@@ -205,8 +80,6 @@ agent = Agent(
     model="your-model-name",
     system_prompt="You are a helpful assistant.",
     parallel_tool_calls=False,
-    disable_stt=False,
-    disable_tts=False,
     generation_params={
         "temperature": 0.2,
         "max_tokens": 512,
@@ -246,22 +119,22 @@ print(result.content)
 
 ### Defining Tools
 
-You can give your agent tools to interact with the world. Tools are defined using the `create_tool` helper.
+You can give your agent tools to interact with the world. Tools are `Tool` objects.
 
 Input and output schemas help the model to correctly pass parameters through to the function. Fury will automatically prune any hallucinated parameters not defined in the input schema.
 
 Learn more in the [OpenAI guide](https://developers.openai.com/api/docs/guides/function-calling/)
 
 ```python
-from fury import Agent, create_tool
+from fury import Agent, Tool
 
 
 def add(a: int, b: int):
     return {"result": a + b}
 
 # Create the tool
-add_tool = create_tool(
-    id="add",
+add_tool = Tool(
+    name="add",
     description="Add two numbers together",
     execute=add,
     input_schema={
@@ -299,7 +172,7 @@ Check out [examples/coding-assistant/coding_assistant.py](examples/coding-assist
 
 - **Tools**: File system operations (`read`, `write`, `edit`, `bash`).
 - **Skills System**: Loading specialized capabilities from `SKILL.md` files.
-- **Memory System**: Using durable memory plus `SOUL.md` for project context.
+- **Markdown Memory Example**: A simple editable markdown file injected into the system prompt.
 - **History Manager**: Uses `HistoryManager` to summarize long conversations and save context window.
 
 Build something neat.

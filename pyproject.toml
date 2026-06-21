@@ -5,8 +5,9 @@ description = "A flexible AI agent library with tool support"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "httpx>=0.28.1",
     "numpy>=2.2.6",
+    "openai>=1.0.0",
+    "python-dotenv>=1.2.1",
     "termcolor",
 ]
 
@@ -17,22 +18,6 @@ examples = [
 ]
 test = [
     "pytest",
-]
-voice = [
-    "faster-whisper",
-    "numpy",
-    "sounddevice>=0.5.5",
-    "soundfile",
-]
-tts = [
-    "numpy",
-    "soundfile",
-    "torch",
-    "phonemizer",
-    "llama-cpp-python",
-    "neucodec",
-    "onnxruntime>=1.17.3,<1.24",
-    "huggingface-hub>=1.4.1",
 ]
 
 [build-system]

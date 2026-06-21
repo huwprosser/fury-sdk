@@ -4,6 +4,22 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Literal, Optional
 
 
+class StreamError(Exception):
+    """Raised when the model provider reports an error mid-stream.
+
+    Upstream providers (e.g. routed through OpenRouter) can signal a failure
+    after the HTTP response has already started by emitting a chunk whose
+    ``finish_reason`` is ``"error"`` or a chunk carrying an ``error`` payload
+    instead of ``choices``. Such a stream ends with partial or no output;
+    surfacing it as an exception lets callers retry, fail over to another
+    model, or report it — instead of silently truncating the response.
+    """
+
+    def __init__(self, message: str, *, code: Any = None) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 @dataclass
 class ToolResult:
     content: Any
@@ -66,20 +82,3 @@ class ChatResult:
     tool_events: List[ToolCallEvent]
     ui_events: List[ToolUiEvent]
     interrupted: bool = False
-
-
-def create_tool(
-    id: str,
-    description: str,
-    execute: Callable[..., Any],
-    input_schema: Dict[str, Any],
-    output_schema: Dict[str, Any],
-) -> Tool:
-    """Create a Tool instance from the provided metadata and callbacks."""
-    return Tool(
-        name=id,
-        description=description,
-        execute=execute,
-        input_schema=input_schema,
-        output_schema=output_schema,
-    )

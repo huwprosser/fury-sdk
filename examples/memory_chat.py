@@ -1,45 +1,70 @@
 import asyncio
+from pathlib import Path
 
-from fury import Agent, HistoryManager, MemoryStore
+from fury import Agent, HistoryManager, Tool
 
 MODEL_NAME = "unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_X"
-MEMORY_SCOPE = "chatbot-demo"
-MEMORY_ROOT = ".fury/memory"
+MEMORY_PATH = Path(".fury/memory.md")
 
-SYSTEM_PROMPT = """You are a helpful assistant.
+BASE_SYSTEM_PROMPT = """You are a helpful assistant.
 
-Use the memory tool for durable user preferences and facts that will matter in future turns.
-Do not store short-lived conversational details or temporary planning notes.
+You have a markdown memory file included below. Use it as durable context.
+When the user asks you to remember, forget, or update durable information, call
+edit_memory with the full replacement markdown content.
 """
 
-memory_store = MemoryStore(MEMORY_ROOT)
+
+def read_memory() -> str:
+    if not MEMORY_PATH.exists():
+        return "# Memory\n\n"
+    return MEMORY_PATH.read_text(encoding="utf-8")
+
+
+def build_system_prompt() -> str:
+    return f"{BASE_SYSTEM_PROMPT}\n\n<memory>\n{read_memory()}\n</memory>"
+
+
+def edit_memory(content: str) -> dict:
+    MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    MEMORY_PATH.write_text(content, encoding="utf-8")
+    return {"path": str(MEMORY_PATH), "content": content}
+
+
+edit_memory_tool = Tool(
+    name="edit_memory",
+    description="Replace the durable markdown memory file with new markdown content.",
+    execute=edit_memory,
+    input_schema={
+        "type": "object",
+        "properties": {
+            "content": {
+                "type": "string",
+                "description": "The full replacement markdown memory content.",
+            }
+        },
+        "required": ["content"],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "content": {"type": "string"},
+        },
+        "required": ["path", "content"],
+    },
+)
+
 agent = Agent(
     model=MODEL_NAME,
-    system_prompt=SYSTEM_PROMPT,
-    memory_store=memory_store,
-    memory_scope=MEMORY_SCOPE,
+    system_prompt=build_system_prompt(),
+    tools=[edit_memory_tool],
 )
-history_manager = HistoryManager(agent=agent)
-
-
-def print_memory() -> None:
-    store = memory_store.get_scope(MEMORY_SCOPE)
-    entries = store["entries"]
-    print()
-    print(f"[memory scope: {MEMORY_SCOPE}]")
-    if not entries:
-        print("(empty)")
-        return
-
-    for entry in entries:
-        prefix = "*" if entry.get("pinned") else "-"
-        print(f"{prefix} {entry['id']}: {entry['content']}")
+history_manager = HistoryManager(target_context_length=32768)
 
 
 async def main() -> None:
-    print(f"[memory root: {MEMORY_ROOT}]")
-    print(f"[memory scope: {MEMORY_SCOPE}]")
-    print("[commands: /memory, /remember <text>, /forget <text>, /exit]")
+    print(f"[memory file: {MEMORY_PATH}]")
+    print("[commands: /memory, /exit]")
 
     while True:
         print()
@@ -50,42 +75,18 @@ async def main() -> None:
         if user_input in {"/exit", "/quit"}:
             break
         if user_input == "/memory":
-            print_memory()
-            continue
-        if user_input.startswith("/remember "):
-            result = memory_store.add(
-                scope=MEMORY_SCOPE,
-                content=user_input[len("/remember ") :].strip(),
-                source="user",
-            )
-            print(result.get("error") or result.get("message") or "Stored.")
-            continue
-        if user_input.startswith("/forget "):
-            result = memory_store.remove(
-                scope=MEMORY_SCOPE,
-                match_text=user_input[len("/forget ") :].strip(),
-            )
-            print(result.get("error") or "Removed.")
+            print(read_memory())
             continue
 
         await history_manager.add({"role": "user", "content": user_input})
 
         transcript = []
-        last_stream_kind = None
         runner = agent.runner()
         async for event in runner.chat(history_manager.history):
             if event.tool_ui:
-                if last_stream_kind == "chunk":
-                    print()
-                last_stream_kind = "tool_ui"
-                print(f"[tool] {event.tool_ui.title}")
-
+                print(f"\n[tool] {event.tool_ui.title}")
             if event.content:
-                if last_stream_kind == "tool_ui":
-                    last_stream_kind = None
                 print(event.content, end="", flush=True)
-                last_stream_kind = "chunk"
-
             if event.history_delta:
                 transcript.append(event.history_delta.message)
 
