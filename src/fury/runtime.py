@@ -16,7 +16,7 @@ from .tool_healing import (
     strip_tool_markup,
 )
 from .tools import ToolExecutor, ToolRegistry
-from .types import ChatResult, ChatStreamEvent, HistoryDelta
+from .types import ChatResult, ChatStreamEvent, HistoryDelta, StreamError
 from .utils.validation import validate_history
 
 logger = logging.getLogger(__name__)
@@ -309,6 +309,32 @@ def _build_chat_completion_kwargs(
     return _move_unknown_kwargs_to_extra_body(kwargs)
 
 
+def _extract_stream_error(obj: Any) -> Optional[Any]:
+    """Pull a provider ``error`` payload off a stream chunk or choice.
+
+    Some OpenAI-compatible providers (notably via OpenRouter) report a
+    mid-stream failure by attaching an ``error`` object to a chunk or choice
+    instead of terminating the stream cleanly. Pydantic models keep unknown
+    fields in ``model_extra``, so check both the attribute and that.
+    """
+    error = getattr(obj, "error", None)
+    if error is None:
+        extra = getattr(obj, "model_extra", None)
+        if isinstance(extra, dict):
+            error = extra.get("error")
+    return error
+
+
+def _format_stream_error(error: Any) -> Tuple[str, Any]:
+    if isinstance(error, dict):
+        message = error.get("message") or error.get("type") or "unknown error"
+        code = error.get("code")
+        if code is not None:
+            return f"Provider stream error ({code}): {message}", code
+        return f"Provider stream error: {message}", None
+    return f"Provider stream error: {error}", None
+
+
 def _append_tool_call_chunks(
     tool_calls: List[Dict[str, Any]],
     delta_tool_calls: Optional[List[Any]],
@@ -476,6 +502,10 @@ class GenerationRunner:
             if _is_expected_stop_exception(exc, session):
                 return
             raise
+        except StreamError:
+            # A genuine provider failure — let the caller retry / fail over
+            # rather than burying it in the assistant's content.
+            raise
         except Exception as exc:
             if _is_expected_stop_exception(exc, session):
                 return
@@ -571,9 +601,23 @@ class GenerationRunner:
         in_think = False
 
         async for chunk in completion:
+            # A provider can report a failure mid-stream (after the 200 has
+            # been sent) by attaching an error payload to the chunk, or by
+            # ending a choice with finish_reason "error". Surface it instead of
+            # silently treating the truncated output as a finished response.
+            chunk_error = _extract_stream_error(chunk)
+            if chunk_error:
+                message, code = _format_stream_error(chunk_error)
+                raise StreamError(message, code=code)
             if not getattr(chunk, "choices", None):
                 continue
-            delta = chunk.choices[0].delta
+            choice = chunk.choices[0]
+            if getattr(choice, "finish_reason", None) == "error":
+                message, code = _format_stream_error(
+                    _extract_stream_error(choice) or {"message": "finish_reason 'error'"}
+                )
+                raise StreamError(message, code=code)
+            delta = choice.delta
             if not delta:
                 continue
 
