@@ -6,17 +6,17 @@ import re
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Dict, List, Optional, Protocol, Tuple
 
-import httpx
+from openai import APIConnectionError, APITimeoutError
 
-from .tools import ToolExecutor, ToolRegistry
+from .multimodal import materialize_history_message
 from .tool_healing import (
     TOOL_XML_SIGNALS,
     has_tool_signal,
     parse_tool_calls_from_text,
     strip_tool_markup,
 )
-from .types import ChatResult, ChatStreamEvent, HistoryDelta
-from .multimodal import materialize_history_message
+from .tools import ToolExecutor, ToolRegistry
+from .types import ChatResult, ChatStreamEvent, HistoryDelta, StreamError
 from .utils.validation import validate_history
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,11 @@ THINK_CLOSE = "</think>"
 
 def _marker_suffix_len(text: str, marker: str) -> int:
     return max(
-        (i for i in range(1, min(len(text), len(marker) - 1) + 1) if marker.startswith(text[-i:])),
+        (
+            i
+            for i in range(1, min(len(text), len(marker) - 1) + 1)
+            if marker.startswith(text[-i:])
+        ),
         default=0,
     )
 
@@ -217,6 +221,63 @@ def _prepare_active_history(
     return active_history
 
 
+OPENAI_CHAT_COMPLETION_KWARGS = {
+    "audio",
+    "extra_body",
+    "extra_headers",
+    "extra_query",
+    "frequency_penalty",
+    "function_call",
+    "functions",
+    "logit_bias",
+    "logprobs",
+    "max_completion_tokens",
+    "max_tokens",
+    "metadata",
+    "modalities",
+    "n",
+    "parallel_tool_calls",
+    "prediction",
+    "presence_penalty",
+    "prompt_cache_key",
+    "reasoning_effort",
+    "response_format",
+    "safety_identifier",
+    "seed",
+    "service_tier",
+    "stop",
+    "store",
+    "stream",
+    "stream_options",
+    "temperature",
+    "timeout",
+    "tool_choice",
+    "tools",
+    "top_logprobs",
+    "top_p",
+    "user",
+    "verbosity",
+    "web_search_options",
+}
+
+
+def _move_unknown_kwargs_to_extra_body(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    normalized: Dict[str, Any] = {}
+    extra_body = dict(kwargs.get("extra_body") or {})
+
+    for key, value in kwargs.items():
+        if key == "extra_body":
+            continue
+        if key in OPENAI_CHAT_COMPLETION_KWARGS or key in {"model", "messages"}:
+            normalized[key] = value
+        else:
+            extra_body[key] = value
+
+    if extra_body:
+        normalized["extra_body"] = extra_body
+    return normalized
+
+
 def _build_chat_completion_kwargs(
     *,
     model: str,
@@ -231,22 +292,47 @@ def _build_chat_completion_kwargs(
     }
     if generation_params:
         kwargs.update(generation_params)
-    chat_template_kwargs = dict(kwargs.get("chat_template_kwargs") or {})
+
+    chat_template_kwargs = dict(kwargs.pop("chat_template_kwargs", {}) or {})
+    extra_body = dict(kwargs.get("extra_body") or {})
+    extra_chat_template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
+    extra_chat_template_kwargs.update(chat_template_kwargs)
     if not reasoning:
-        chat_template_kwargs["enable_thinking"] = False
-    if chat_template_kwargs:
-        kwargs["chat_template_kwargs"] = chat_template_kwargs
-    if not reasoning:
-        extra_body = dict(kwargs.get("extra_body") or {})
-        extra_chat_template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
-        extra_chat_template_kwargs.update(chat_template_kwargs)
         extra_chat_template_kwargs["enable_thinking"] = False
+    if extra_chat_template_kwargs:
         extra_body["chat_template_kwargs"] = extra_chat_template_kwargs
         kwargs["extra_body"] = extra_body
+
     if tools:
         kwargs["tools"] = tools
     kwargs["model"] = model
-    return kwargs
+    return _move_unknown_kwargs_to_extra_body(kwargs)
+
+
+def _extract_stream_error(obj: Any) -> Optional[Any]:
+    """Pull a provider ``error`` payload off a stream chunk or choice.
+
+    Some OpenAI-compatible providers (notably via OpenRouter) report a
+    mid-stream failure by attaching an ``error`` object to a chunk or choice
+    instead of terminating the stream cleanly. Pydantic models keep unknown
+    fields in ``model_extra``, so check both the attribute and that.
+    """
+    error = getattr(obj, "error", None)
+    if error is None:
+        extra = getattr(obj, "model_extra", None)
+        if isinstance(extra, dict):
+            error = extra.get("error")
+    return error
+
+
+def _format_stream_error(error: Any) -> Tuple[str, Any]:
+    if isinstance(error, dict):
+        message = error.get("message") or error.get("type") or "unknown error"
+        code = error.get("code")
+        if code is not None:
+            return f"Provider stream error ({code}): {message}", code
+        return f"Provider stream error: {message}", None
+    return f"Provider stream error: {error}", None
 
 
 def _append_tool_call_chunks(
@@ -278,9 +364,7 @@ def _auto_heal_tool_calls(runtime: GenerationRuntime) -> bool:
     return bool(getattr(runtime, "auto_heal_tool_calls", True))
 
 
-def _is_expected_stop_exception(
-    exc: BaseException, session: GenerationSession
-) -> bool:
+def _is_expected_stop_exception(exc: BaseException, session: GenerationSession) -> bool:
     if not session.stop_requested:
         return False
 
@@ -288,10 +372,8 @@ def _is_expected_stop_exception(
         exc,
         (
             asyncio.CancelledError,
-            httpx.TimeoutException,
-            httpx.NetworkError,
-            httpx.ReadError,
-            httpx.RemoteProtocolError,
+            APIConnectionError,
+            APITimeoutError,
         ),
     )
 
@@ -330,6 +412,7 @@ class GenerationRunner:
                     break
 
                 tool_calls: List[Dict[str, Any]] = []
+                round_content: List[str] = []
                 kwargs = _build_chat_completion_kwargs(
                     model=model if model is not None else self.runtime.model,
                     active_history=active_history,
@@ -353,6 +436,7 @@ class GenerationRunner:
                     ):
                         if event.content:
                             response_buffer.append(event.content)
+                            round_content.append(event.content)
                             session.update_partial_response("".join(response_buffer))
                         yield event
                         if session.stop_requested:
@@ -367,7 +451,11 @@ class GenerationRunner:
                     break
 
                 if not tool_calls:
-                    final_text = "".join(response_buffer)
+                    # Only this round's text: any narration from earlier rounds
+                    # was already persisted on its own assistant_tool_calls
+                    # message below, so joining the whole response_buffer here
+                    # would duplicate it in the final message.
+                    final_text = "".join(round_content)
                     if final_text:
                         message = {"role": "assistant", "content": final_text}
                         yield ChatStreamEvent(
@@ -378,7 +466,18 @@ class GenerationRunner:
                         )
                     return
 
-                message = {"role": "assistant", "tool_calls": tool_calls}
+                # Preserve any narration the model emitted alongside its tool
+                # calls. Without the content key the model only ever sees its
+                # tool calls (not what it said before them) on the next round,
+                # so it re-narrates/re-plans every round — producing repeated
+                # text and runaway tool loops.
+                message: Dict[str, Any] = {
+                    "role": "assistant",
+                    "tool_calls": tool_calls,
+                }
+                round_text = "".join(round_content)
+                if round_text:
+                    message["content"] = round_text
                 active_history.append(message)
                 yield ChatStreamEvent(
                     history_delta=HistoryDelta(
@@ -402,6 +501,10 @@ class GenerationRunner:
         except asyncio.CancelledError as exc:
             if _is_expected_stop_exception(exc, session):
                 return
+            raise
+        except StreamError:
+            # A genuine provider failure — let the caller retry / fail over
+            # rather than burying it in the assistant's content.
             raise
         except Exception as exc:
             if _is_expected_stop_exception(exc, session):
@@ -498,15 +601,31 @@ class GenerationRunner:
         in_think = False
 
         async for chunk in completion:
+            # A provider can report a failure mid-stream (after the 200 has
+            # been sent) by attaching an error payload to the chunk, or by
+            # ending a choice with finish_reason "error". Surface it instead of
+            # silently treating the truncated output as a finished response.
+            chunk_error = _extract_stream_error(chunk)
+            if chunk_error:
+                message, code = _format_stream_error(chunk_error)
+                raise StreamError(message, code=code)
             if not getattr(chunk, "choices", None):
                 continue
-            delta = chunk.choices[0].delta
+            choice = chunk.choices[0]
+            if getattr(choice, "finish_reason", None) == "error":
+                message, code = _format_stream_error(
+                    _extract_stream_error(choice) or {"message": "finish_reason 'error'"}
+                )
+                raise StreamError(message, code=code)
+            delta = choice.delta
             if not delta:
                 continue
 
             _append_tool_call_chunks(tool_calls, getattr(delta, "tool_calls", None))
 
-            reasoning_content = getattr(delta, "reasoning_content", None)
+            reasoning_content = getattr(delta, "reasoning_content", None) or getattr(
+                delta, "reasoning", None
+            )
             if reasoning_content and not draining_tool_markup:
                 yield ChatStreamEvent(reasoning=reasoning_content)
                 continue
@@ -533,11 +652,16 @@ class GenerationRunner:
                         stripped = pending_prefix.lstrip()
                         if not stripped:
                             continue
-                        if any(stripped.startswith(signal) for signal in TOOL_XML_SIGNALS):
+                        if any(
+                            stripped.startswith(signal) for signal in TOOL_XML_SIGNALS
+                        ):
                             draining_tool_markup = True
                             continue
                         if (
-                            any(signal.startswith(stripped) for signal in TOOL_XML_SIGNALS)
+                            any(
+                                signal.startswith(stripped)
+                                for signal in TOOL_XML_SIGNALS
+                            )
                             and len(stripped) <= max_prefix_chars
                         ):
                             continue
