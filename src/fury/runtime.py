@@ -216,7 +216,11 @@ def _prepare_active_history(
     system_prompt: str,
 ) -> List[Dict[str, Any]]:
     active_history = [materialize_history_message(message) for message in history]
-    if system_prompt and not any(msg.get("role") == "system" for msg in active_history):
+    # A leading system message overrides the base prompt; a system message
+    # deeper in the history (e.g. an injected mid-conversation reminder) must
+    # not suppress it.
+    has_leading_system = bool(active_history) and active_history[0].get("role") == "system"
+    if system_prompt and not has_leading_system:
         return [{"role": "system", "content": system_prompt}, *active_history]
     return active_history
 

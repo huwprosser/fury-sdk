@@ -68,6 +68,26 @@ def test_agent_preserves_system_prompt_when_calling_with_external_history():
     assert sum(1 for message in second_messages if message["role"] == "system") == 1
 
 
+def test_agent_keeps_base_prompt_with_mid_history_system_message():
+    create = SequencedCreate([FakeCompletion([FakeDelta(content="ok")])])
+    agent = Agent(model="test-model", system_prompt="System prompt")
+    agent.client = make_fake_client(create)
+
+    collect_chat(
+        agent,
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "system", "content": "Ephemeral context update"},
+            {"role": "user", "content": "and now?"},
+        ],
+    )
+
+    messages = create.calls[0]["messages"]
+    assert messages[0] == {"role": "system", "content": "System prompt"}
+    assert messages[3] == {"role": "system", "content": "Ephemeral context update"}
+
+
 def test_agent_streams_plain_text_in_order():
     create = SequencedCreate(
         [
