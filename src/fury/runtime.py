@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Dict, List, Optional, Protocol, Tuple
 
-from openai import APIConnectionError, APITimeoutError
+from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
 
 from .multimodal import materialize_history_message
 from .tool_healing import (
@@ -20,6 +20,49 @@ from .types import ChatResult, ChatStreamEvent, HistoryDelta, StreamError
 from .utils.validation import validate_history
 
 logger = logging.getLogger(__name__)
+
+# Provider rate-limit (HTTP 429) retry policy: retry the chat completion
+# request up to 5 times, waiting a fixed 2 seconds between attempts, then
+# fail outright by re-raising.
+RATE_LIMIT_MAX_RETRIES = 5
+RATE_LIMIT_RETRY_DELAY = 2.0
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    """Return True if *exc* represents a provider 429 rate-limit error."""
+    if isinstance(exc, RateLimitError):
+        return True
+    if isinstance(exc, StreamError):
+        return exc.code == 429
+    status = getattr(exc, "status_code", None)
+    if status == 429:
+        return True
+    if isinstance(exc, APIStatusError) and exc.status_code == 429:
+        return True
+    return False
+
+
+async def _create_chat_completion_with_retry(client: Any, kwargs: Dict[str, Any]) -> Any:
+    """Create a chat completion, retrying 429s 5 times 2 seconds apart."""
+    last_exc: Optional[BaseException] = None
+    for attempt in range(RATE_LIMIT_MAX_RETRIES + 1):
+        try:
+            return await client.chat.completions.create(**kwargs)
+        except Exception as exc:  # noqa: BLE001 - filtered by _is_rate_limit_error
+            if not _is_rate_limit_error(exc):
+                raise
+            last_exc = exc
+            if attempt >= RATE_LIMIT_MAX_RETRIES:
+                break
+            logger.warning(
+                "Provider rate limit (429). Retrying in %.1fs (attempt %d/%d).",
+                RATE_LIMIT_RETRY_DELAY,
+                attempt + 1,
+                RATE_LIMIT_MAX_RETRIES,
+            )
+            await asyncio.sleep(RATE_LIMIT_RETRY_DELAY)
+    assert last_exc is not None
+    raise last_exc
 
 THINK_OPEN = "<think>"
 THINK_CLOSE = "</think>"
@@ -424,32 +467,62 @@ class GenerationRunner:
                     tools=self.tool_registry.tools,
                     generation_params=self.runtime.generation_params,
                 )
-                completion = await self.runtime.client.chat.completions.create(**kwargs)
-                session.attach_stream(completion)
+                # One tool-round = one provider request. Create-level 429s are
+                # retried inside _create_chat_completion_with_retry (5x2s). A
+                # mid-stream 429 before any output is equivalent to a rejected
+                # request, so retry the round with the same policy. Once
+                # anything has been yielded we cannot retry without
+                # duplicating streamed output, so fail outright instead.
+                for stream_attempt in range(RATE_LIMIT_MAX_RETRIES + 1):
+                    completion = await _create_chat_completion_with_retry(
+                        self.runtime.client, kwargs
+                    )
+                    session.attach_stream(completion)
+                    events_yielded_this_round = 0
 
-                try:
-                    async for event in self._stream_chat_completion_events(
-                        completion=completion,
-                        tool_calls=tool_calls,
-                        prune_unfinished_sentences=prune_unfinished_sentences,
-                        reasoning=reasoning,
-                        auto_heal_tool_calls=(
-                            _auto_heal_tool_calls(self.runtime)
-                            and bool(self.tool_registry.tools)
-                        ),
-                    ):
-                        if event.content:
-                            response_buffer.append(event.content)
-                            round_content.append(event.content)
-                            session.update_partial_response("".join(response_buffer))
-                        yield event
-                        if session.stop_requested:
-                            break
-                finally:
-                    session.detach_stream(completion)
-                    close = getattr(completion, "aclose", None)
-                    if close is not None:
-                        await close()
+                    try:
+                        async for event in self._stream_chat_completion_events(
+                            completion=completion,
+                            tool_calls=tool_calls,
+                            prune_unfinished_sentences=prune_unfinished_sentences,
+                            reasoning=reasoning,
+                            auto_heal_tool_calls=(
+                                _auto_heal_tool_calls(self.runtime)
+                                and bool(self.tool_registry.tools)
+                            ),
+                        ):
+                            if event.content:
+                                response_buffer.append(event.content)
+                                round_content.append(event.content)
+                                session.update_partial_response("".join(response_buffer))
+                            events_yielded_this_round += 1
+                            yield event
+                            if session.stop_requested:
+                                break
+                    except StreamError as stream_exc:
+                        if (
+                            _is_rate_limit_error(stream_exc)
+                            and events_yielded_this_round == 0
+                            and not round_content
+                            and not tool_calls
+                            and stream_attempt < RATE_LIMIT_MAX_RETRIES
+                        ):
+                            logger.warning(
+                                "Provider rate limit (429) mid-stream. "
+                                "Retrying in %.1fs (attempt %d/%d).",
+                                RATE_LIMIT_RETRY_DELAY,
+                                stream_attempt + 1,
+                                RATE_LIMIT_MAX_RETRIES,
+                            )
+                            await asyncio.sleep(RATE_LIMIT_RETRY_DELAY)
+                            continue
+                        raise
+                    finally:
+                        session.detach_stream(completion)
+                        close = getattr(completion, "aclose", None)
+                        if close is not None:
+                            await close()
+                    break
 
                 if session.stop_requested:
                     break
@@ -513,6 +586,10 @@ class GenerationRunner:
         except Exception as exc:
             if _is_expected_stop_exception(exc, session):
                 return
+            if _is_rate_limit_error(exc):
+                # Retries exhausted: fail outright so the caller sees the
+                # 429 instead of it being buried in assistant content.
+                raise
             logger.exception(f"Error in chat: {exc}")
             yield ChatStreamEvent(content=str(exc))
         finally:

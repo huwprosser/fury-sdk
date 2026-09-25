@@ -20,6 +20,7 @@ A flexible and powerful AI agent library for Python, designed to build agents wi
 - **Tool Support**: Define and register custom tools (functions) that the agent can execute and parallel tool execution support.
 - **Image inputs**: Support for multimodal image inputs.
 - **History Management**: Use `HistoryManager` for simple target-context trimming.
+- **Optional session storage**: Save append-only conversations, metadata, and custom events to JSONL or your own database callbacks.
 
 
 ## Installation
@@ -92,6 +93,24 @@ async for event in runner.chat(history, reasoning=False):
     ...
 
 ```
+
+### Session Storage
+
+```python
+from fury.sessions import JSONLStorage, SessionManager
+
+session = await SessionManager.load_or_create(
+    storage=JSONLStorage("./sessions"), id="my-chat",
+)
+async for event in session.stream(agent.runner(), "Hello!"):
+    if event.content:
+        print(event.content, end="", flush=True)
+```
+
+Storage is opt-in and independent of `Agent` and `HistoryManager`. Use custom
+async callbacks for database storage without adding database dependencies to Fury.
+See [session storage](docs/sessions.md) for metadata, interruption handling,
+backend contracts, and a complete **MongoDB example**.
 
 ### Persisting Transcripts
 

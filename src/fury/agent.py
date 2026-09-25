@@ -87,10 +87,16 @@ class Agent:
         self.available_functions = self._tool_registry.available_functions
         self.tool_objects = self._tool_registry.tool_objects
 
+        # Fury owns 429 retry policy (5 retries, 2s fixed delay — see
+        # runtime._create_chat_completion_with_retry), so disable the OpenAI
+        # SDK's built-in exponential-backoff retries by default. An explicit
+        # max_retries in client_options still wins.
+        client_options = dict(client_options or {})
+        client_options.setdefault("max_retries", 0)
         self.client = AsyncOpenAI(
             base_url=base_url,
             api_key=api_key or "EMPTY",
-            **(client_options or {}),
+            **client_options,
         )
         self._runner = GenerationRunner(
             runtime=self,
